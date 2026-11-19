@@ -1,16 +1,40 @@
 #pragma once
 
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+
 #include <string>
 #include <vector>
 #include <thread>
 #include <atomic>
 #include <mutex>
 #include <algorithm>
+
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#pragma comment(lib, "ws2_32.lib")
+using socket_t = SOCKET;
+#define IS_VALID_SOCKET(s) ((s) != INVALID_SOCKET)
+#define CLOSE_SOCKET(s) closesocket(s)
+#else
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <fcntl.h>
+using socket_t = int;
+#define IS_VALID_SOCKET(s) ((s) >= 0)
+#define CLOSE_SOCKET(s) close(s)
+#define INVALID_SOCKET (-1)
+#define SOCKET_ERROR (-1)
+#endif
+
 #include "Protocol.hpp"
 #include "engine/core/Logger.hpp"
 #include "engine/core/Engine.hpp"
@@ -33,15 +57,27 @@ public:
         std::lock_guard<std::recursive_mutex> lock(m_mutex);
         if (m_running) return true;
 
+#ifdef _WIN32
+        WSADATA wsaData;
+        if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
+            core::Logger::error("Failed to initialize Winsock");
+            return false;
+        }
+#endif
+
         m_port = port;
         m_serverFd = socket(AF_INET, SOCK_STREAM, 0);
-        if (m_serverFd < 0) {
+        if (!IS_VALID_SOCKET(m_serverFd)) {
             core::Logger::error("Failed to create IPC socket");
             return false;
         }
 
         int opt = 1;
+#ifdef _WIN32
+        setsockopt(m_serverFd, SOL_SOCKET, SO_REUSEADDR, (const char*)&opt, sizeof(opt));
+#else
         setsockopt(m_serverFd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+#endif
 
         sockaddr_in address{};
         address.sin_family = AF_INET;
@@ -50,15 +86,15 @@ public:
 
         if (bind(m_serverFd, (struct sockaddr*)&address, sizeof(address)) < 0) {
             core::Logger::error("Failed to bind IPC socket to port " + std::to_string(port));
-            close(m_serverFd);
-            m_serverFd = -1;
+            CLOSE_SOCKET(m_serverFd);
+            m_serverFd = INVALID_SOCKET;
             return false;
         }
 
         if (listen(m_serverFd, 5) < 0) {
             core::Logger::error("Failed to listen on IPC socket");
-            close(m_serverFd);
-            m_serverFd = -1;
+            CLOSE_SOCKET(m_serverFd);
+            m_serverFd = INVALID_SOCKET;
             return false;
         }
 
@@ -99,14 +135,17 @@ public:
             std::lock_guard<std::recursive_mutex> lock(m_mutex);
             if (!m_running) return;
             m_running = false;
-            if (m_serverFd >= 0) {
-                close(m_serverFd);
-                m_serverFd = -1;
+            if (IS_VALID_SOCKET(m_serverFd)) {
+                CLOSE_SOCKET(m_serverFd);
+                m_serverFd = INVALID_SOCKET;
             }
-            for (int clientFd : m_clients) {
-                close(clientFd);
+            for (socket_t clientFd : m_clients) {
+                CLOSE_SOCKET(clientFd);
             }
             m_clients.clear();
+#ifdef _WIN32
+            WSACleanup();
+#endif
         }
 
         if (m_acceptThread && m_acceptThread->joinable()) {
@@ -118,15 +157,15 @@ public:
     }
 
     void broadcast(const std::string& message) {
-        std::vector<int> currentClients;
+        std::vector<socket_t> currentClients;
         {
             std::lock_guard<std::recursive_mutex> lock(m_mutex);
             currentClients = m_clients;
         }
 
-        std::vector<int> deadClients;
-        for (int fd : currentClients) {
-            ssize_t sent = send(fd, message.c_str(), message.size(), 0);
+        std::vector<socket_t> deadClients;
+        for (socket_t fd : currentClients) {
+            int sent = send(fd, message.c_str(), static_cast<int>(message.size()), 0);
             if (sent < 0) {
                 deadClients.push_back(fd);
             }
@@ -252,8 +291,8 @@ private:
         while (m_running) {
             sockaddr_in clientAddr{};
             socklen_t clientLen = sizeof(clientAddr);
-            int clientFd = accept(m_serverFd, (struct sockaddr*)&clientAddr, &clientLen);
-            if (clientFd < 0) {
+            socket_t clientFd = accept(m_serverFd, (struct sockaddr*)&clientAddr, &clientLen);
+            if (!IS_VALID_SOCKET(clientFd)) {
                 if (!m_running) break;
                 continue;
             }
@@ -270,12 +309,12 @@ private:
         }
     }
 
-    void clientHandler(int clientFd) {
+    void clientHandler(socket_t clientFd) {
         std::string buffer;
         char temp[4096];
 
         while (m_running) {
-            ssize_t bytesRead = recv(clientFd, temp, sizeof(temp) - 1, 0);
+            int bytesRead = recv(clientFd, temp, sizeof(temp) - 1, 0);
             if (bytesRead <= 0) break;
 
             temp[bytesRead] = '\0';
@@ -292,16 +331,16 @@ private:
                     nlohmann::json req = nlohmann::json::parse(line);
                     nlohmann::json resp = handleRequest(req);
                     std::string respStr = resp.dump() + "\n";
-                    send(clientFd, respStr.c_str(), respStr.size(), 0);
+                    send(clientFd, respStr.c_str(), static_cast<int>(respStr.size()), 0);
                 } catch (const std::exception& e) {
                     nlohmann::json err = makeErrorResponse(nullptr, -32700, std::string("Parse error: ") + e.what());
                     std::string errStr = err.dump() + "\n";
-                    send(clientFd, errStr.c_str(), errStr.size(), 0);
+                    send(clientFd, errStr.c_str(), static_cast<int>(errStr.size()), 0);
                 }
             }
         }
 
-        close(clientFd);
+        CLOSE_SOCKET(clientFd);
         {
             std::lock_guard<std::recursive_mutex> lock(m_mutex);
             m_clients.erase(std::remove(m_clients.begin(), m_clients.end(), clientFd), m_clients.end());
@@ -311,10 +350,10 @@ private:
 
     mutable std::recursive_mutex m_mutex;
     std::atomic<bool> m_running{false};
-    int m_serverFd{-1};
+    socket_t m_serverFd{INVALID_SOCKET};
     int m_port{8765};
     std::unique_ptr<std::thread> m_acceptThread;
-    std::vector<int> m_clients;
+    std::vector<socket_t> m_clients;
 };
 
 } // namespace bot::ipc

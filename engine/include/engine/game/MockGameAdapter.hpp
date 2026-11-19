@@ -115,10 +115,10 @@ public:
         core::Logger::info("MockGameAdapter: Used item on self: " + std::to_string(itemId));
         Player p = GameState::instance().getPlayer();
         if (itemId == 266) { // Health Potion
-            p.hp = std::min(p.maxHp, p.hp + 200);
+            p.hp = (std::min)(p.maxHp, p.hp + 200);
             GameState::instance().setPlayer(p);
         } else if (itemId == 268) { // Mana Potion
-            p.mp = std::min(p.maxMp, p.mp + 150);
+            p.mp = (std::min)(p.maxMp, p.mp + 150);
             GameState::instance().setPlayer(p);
         }
         return true;
@@ -185,7 +185,7 @@ public:
 
     void simulatePlayerDamage(int damage) {
         Player p = GameState::instance().getPlayer();
-        p.hp = std::max(0, p.hp - damage);
+        p.hp = (std::max)(0, p.hp - damage);
         GameState::instance().setPlayer(p);
         core::EventManager::instance().publish("PlayerDamageTaken", {{"damage", damage}, {"currentHp", p.hp}});
     }
