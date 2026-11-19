@@ -1,4 +1,0 @@
-/Users/kamil/Desktop/bot/engine/build/CMakeFiles/tibia_engine.dir
-/Users/kamil/Desktop/bot/engine/build/CMakeFiles/engine_test.dir
-/Users/kamil/Desktop/bot/engine/build/CMakeFiles/edit_cache.dir
-/Users/kamil/Desktop/bot/engine/build/CMakeFiles/rebuild_cache.dir
