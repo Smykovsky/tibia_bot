@@ -1,0 +1,52 @@
+name: Build Windows Single Executable
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install vcpkg dependencies (nlohmann-json, lua)
+        run: |
+          vcpkg install nlohmann-json:x64-windows lua:x64-windows
+
+      - name: Configure and Build C++ Engine
+        run: |
+          cmake -B engine/build -S engine `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
+          cmake --build engine/build --config Release --parallel
+
+      - name: Install Python Build Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install PySide6-Essentials pyinstaller
+
+      - name: Bundle Standalone Executable via PyInstaller
+        run: |
+          pyinstaller TibiaBot.spec --clean --noconfirm
+
+      - name: Copy Configs and Scripts to Distribution Directory
+        run: |
+          Copy-Item -Path "configs" -Destination "dist\configs" -Recurse -Force
+          Copy-Item -Path "scripts" -Destination "dist\scripts" -Recurse -Force
+
+      - name: Upload TibiaBot Standalone Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: TibiaBot-Windows-x64
+          path: dist/

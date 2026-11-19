@@ -1,0 +1,110 @@
+{
+    "Client": {
+        "targetProcess": "DBVictory.exe",
+        "candidates": ["DBVictory.exe", "dbvictory.exe", "Tibia.exe", "tibia.exe", "otclient.exe", "client.exe"]
+    },
+    "Healing": {
+        "rules": [
+            {
+                "name": "Emergency Vita",
+                "enabled": true,
+                "trigger": "hp_below",
+                "thresholdPercent": 50.0,
+                "action": "spell",
+                "spellWords": "exura vita",
+                "itemId": 266,
+                "minMana": 160,
+                "cooldownMs": 1000,
+                "priority": 1
+            },
+            {
+                "name": "Medium Gran",
+                "enabled": true,
+                "trigger": "hp_below",
+                "thresholdPercent": 75.0,
+                "action": "spell",
+                "spellWords": "exura gran",
+                "itemId": 266,
+                "minMana": 70,
+                "cooldownMs": 1000,
+                "priority": 2
+            },
+            {
+                "name": "Health Potion Emergency",
+                "enabled": true,
+                "trigger": "hp_below",
+                "thresholdPercent": 30.0,
+                "action": "item",
+                "itemId": 266,
+                "minMana": 0,
+                "cooldownMs": 1000,
+                "priority": 0
+            }
+        ]
+    },
+    "Cavebot": {
+        "waypoints": [
+            {
+                "type": "walk",
+                "x": 32300,
+                "y": 32200,
+                "z": 7,
+                "label": "Start",
+                "script": "",
+                "tolerance": 1
+            },
+            {
+                "type": "walk",
+                "x": 32310,
+                "y": 32205,
+                "z": 7,
+                "label": "Spawn Area",
+                "script": "",
+                "tolerance": 1
+            }
+        ]
+    },
+    "Targeting": {
+        "targets": [
+            {
+                "name": "Dragon",
+                "priority": 1,
+                "stance": "chase",
+                "desiredDistance": 1,
+                "spells": ["exori hur"]
+            },
+            {
+                "name": "*",
+                "priority": 10,
+                "stance": "chase",
+                "desiredDistance": 1,
+                "spells": []
+            }
+        ]
+    },
+    "Looting": {
+        "items": [
+            {
+                "id": 3031,
+                "name": "Gold Coin",
+                "destContainer": 0
+            },
+            {
+                "id": 3035,
+                "name": "Platinum Coin",
+                "destContainer": 0
+            }
+        ]
+    },
+    "SmartAOE": {
+        "rules": [
+            {
+                "spell": "exori",
+                "minMonsters": 3,
+                "maxDistance": 1,
+                "minMana": 115,
+                "cooldownMs": 2000
+            }
+        ]
+    }
+}
