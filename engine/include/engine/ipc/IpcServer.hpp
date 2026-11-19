@@ -173,8 +173,8 @@ public:
 
         if (!deadClients.empty()) {
             std::lock_guard<std::recursive_mutex> lock(m_mutex);
-            for (int deadFd : deadClients) {
-                close(deadFd);
+            for (socket_t deadFd : deadClients) {
+                CLOSE_SOCKET(deadFd);
                 m_clients.erase(std::remove(m_clients.begin(), m_clients.end(), deadFd), m_clients.end());
             }
         }
