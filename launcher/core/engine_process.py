@@ -8,36 +8,49 @@ from typing import Optional, Callable
 
 class EngineProcessManager:
     def __init__(self, binary_path: Optional[str] = None, port: int = 8765):
-        if binary_path is None:
-            exe_name = "tibia_engine.exe" if os.name == "nt" else "tibia_engine"
-            if getattr(sys, 'frozen', False):
-                # Running inside PyInstaller bundled .exe
-                base_dir = getattr(sys, '_MEIPASS', os.path.dirname(sys.executable))
-                candidates = [
-                    os.path.join(base_dir, exe_name),
-                    os.path.join(os.path.dirname(sys.executable), exe_name),
-                    os.path.join(base_dir, "engine", exe_name),
-                    os.path.join(os.path.dirname(sys.executable), "engine", exe_name),
-                ]
-                self.binary_path = next((c for c in candidates if os.path.exists(c)), candidates[0])
-            else:
-                root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-                candidates = [
-                    os.path.join(root_dir, "engine", "build", exe_name),
-                    os.path.join(root_dir, "engine", "build", "Release", exe_name),
-                    os.path.join(root_dir, "engine", "build", "Debug", exe_name),
-                    os.path.join(root_dir, exe_name),
-                    os.path.join(root_dir, "engine", "build", "tibia_engine"),
-                ]
-                self.binary_path = next((c for c in candidates if os.path.exists(c)), candidates[0])
-        else:
-            self.binary_path = binary_path
-
         self.port = port
         self.proc: Optional[subprocess.Popen] = None
         self._monitor_thread: Optional[threading.Thread] = None
         self._running = False
         self.on_crash_callback: Optional[Callable[[int], None]] = None
+
+        if binary_path is None:
+            self.binary_path = self._resolve_engine_binary()
+        else:
+            self.binary_path = binary_path
+
+    def _resolve_engine_binary(self) -> str:
+        exe_names = ["tibia_engine.exe", "tibia_engine"] if os.name == "nt" else ["tibia_engine", "tibia_engine.exe"]
+        candidates = []
+
+        if getattr(sys, 'frozen', False):
+            # Running inside PyInstaller bundled .exe
+            base_dir = getattr(sys, '_MEIPASS', os.path.dirname(sys.executable))
+            exe_dir = os.path.dirname(sys.executable)
+            for name in exe_names:
+                candidates.extend([
+                    os.path.join(base_dir, name),
+                    os.path.join(exe_dir, name),
+                    os.path.join(base_dir, "engine", name),
+                    os.path.join(exe_dir, "engine", name),
+                    os.path.join(base_dir, "dist", name),
+                    os.path.join(exe_dir, "dist", name),
+                ])
+        else:
+            root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+            for name in exe_names:
+                candidates.extend([
+                    os.path.join(root_dir, "engine", "build", "Release", name),
+                    os.path.join(root_dir, "engine", "build", name),
+                    os.path.join(root_dir, "engine", "build", "Debug", name),
+                    os.path.join(root_dir, name),
+                    os.path.join(root_dir, "dist", name),
+                ])
+
+        for c in candidates:
+            if os.path.exists(c):
+                return c
+        return candidates[0] if candidates else "tibia_engine.exe"
 
     def is_running(self) -> bool:
         if self.proc is None:
@@ -48,18 +61,39 @@ class EngineProcessManager:
         if self.is_running():
             return True
 
+        # Refresh resolution in case binary was placed next to exe
         if not os.path.exists(self.binary_path):
-            raise FileNotFoundError(f"Engine executable not found at: {self.binary_path}")
+            self.binary_path = self._resolve_engine_binary()
+
+        if not os.path.exists(self.binary_path):
+            raise FileNotFoundError(
+                f"Engine executable not found at: {self.binary_path}\n"
+                f"Make sure tibia_engine.exe is located in the same directory as TibiaBot.exe."
+            )
 
         if getattr(sys, 'frozen', False):
-            workdir = os.path.dirname(sys.executable)
+            base_dir = getattr(sys, '_MEIPASS', os.path.dirname(sys.executable))
+            exe_dir = os.path.dirname(sys.executable)
+            if os.path.exists(os.path.join(exe_dir, "configs")):
+                workdir = exe_dir
+            elif os.path.exists(os.path.join(base_dir, "configs")):
+                workdir = base_dir
+            else:
+                workdir = exe_dir
         else:
             workdir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+
         cmd = [self.binary_path, "--port", str(self.port)]
+
+        env = os.environ.copy()
+        bin_dir = os.path.dirname(self.binary_path)
+        meipass = getattr(sys, '_MEIPASS', '')
+        env["PATH"] = bin_dir + (os.pathsep + meipass if meipass else "") + os.pathsep + env.get("PATH", "")
 
         self.proc = subprocess.Popen(
             cmd,
             cwd=workdir,
+            env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True

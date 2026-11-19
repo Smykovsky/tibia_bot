@@ -43,10 +43,16 @@ jobs:
         run: |
           pyinstaller TibiaBot.spec --clean --noconfirm
 
-      - name: Copy Configs and Scripts to Distribution Directory
+      - name: Copy Configs, Scripts, Engine and DLLs to Distribution Directory
         run: |
           Copy-Item -Path "configs" -Destination "dist\configs" -Recurse -Force
           Copy-Item -Path "scripts" -Destination "dist\scripts" -Recurse -Force
+          if (Test-Path "engine\build\Release\tibia_engine.exe") {
+            Copy-Item "engine\build\Release\tibia_engine.exe" -Destination "dist\tibia_engine.exe" -Force
+          }
+          if (Test-Path "engine\build\Release\*.dll") {
+            Copy-Item "engine\build\Release\*.dll" -Destination "dist\" -Force -ErrorAction SilentlyContinue
+          }
           if (Test-Path "$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows/bin/*.dll") {
             Copy-Item "$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows/bin/*.dll" -Destination "dist\" -Force -ErrorAction SilentlyContinue
           }
@@ -71,11 +77,11 @@ jobs:
             ## TibiaBot - Shrouded Edition (Universal Bot)
             - Samodzielny plik wykonywalny **TibiaBot.exe**
             - Wbudowany C++20 Engine + PySide6 Qt GUI
-            - Gotowy do gry na **Dragon Ball Victory (DBVictory.exe)** oraz Tibia.exe
+            - Gotowy do gry na **Dragon Ball Victory (dbvStart.exe)** oraz Tibia.exe
             
             ### Jak uruchomić:
             1. Pobierz `TibiaBot-v1.0.0-Windows.zip` poniżej.
-            2. Wypakuj archiwum.
+            2. Wypakuj całe archiwum zip do folderu.
             3. Uruchom `TibiaBot.exe`!
           files: |
             TibiaBot-v1.0.0-Windows.zip

@@ -271,7 +271,7 @@ public:
             }
             return makeSuccessResponse(id, {{"status", "no_adapter"}});
         } else if (method == "setTargetClient") {
-            std::string proc = params.value("processName", "DBVictory.exe");
+            std::string proc = params.value("processName", "dbvStart.exe");
             auto adapter = core::Engine::instance().getGameAdapter();
             if (adapter) {
                 adapter->setTargetProcessName(proc);

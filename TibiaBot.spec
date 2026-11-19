@@ -13,20 +13,37 @@ datas = [
     (os.path.join(project_root, 'scripts'), 'scripts'),
 ]
 
-# Binaries to embed in bundle (C++ Engine)
+# Binaries to embed in bundle (C++ Engine & runtime DLLs)
 binaries = []
 
-engine_exe = os.path.join(project_root, 'engine', 'build', 'Release', 'tibia_engine.exe')
-if not os.path.exists(engine_exe):
-    engine_exe = os.path.join(project_root, 'engine', 'build', 'tibia_engine.exe')
-if not os.path.exists(engine_exe):
-    engine_exe = os.path.join(project_root, 'engine', 'build', 'tibia_engine')
+engine_candidates = [
+    os.path.join(project_root, 'engine', 'build', 'Release', 'tibia_engine.exe'),
+    os.path.join(project_root, 'engine', 'build', 'tibia_engine.exe'),
+    os.path.join(project_root, 'engine', 'build', 'tibia_engine'),
+]
+engine_exe = next((c for c in engine_candidates if os.path.exists(c)), None)
 
-if os.path.exists(engine_exe):
+if engine_exe:
     # Place executable at root of unpacked bundle
     binaries.append((engine_exe, '.'))
+    # Collect all DLLs alongside engine_exe (e.g. lua.dll)
+    engine_dir = os.path.dirname(engine_exe)
+    for fname in os.listdir(engine_dir):
+        if fname.lower().endswith('.dll'):
+            binaries.append((os.path.join(engine_dir, fname), '.'))
 else:
-    print(f"WARNING: C++ Engine binary not found at {engine_exe}! Build C++ engine first.")
+    print(f"WARNING: C++ Engine binary not found! Searched in: {engine_candidates}")
+
+# Also check vcpkg installed directory for DLLs in CI
+vcpkg_root = os.environ.get('VCPKG_INSTALLATION_ROOT')
+if vcpkg_root:
+    vcpkg_bin = os.path.join(vcpkg_root, 'installed', 'x64-windows', 'bin')
+    if os.path.exists(vcpkg_bin):
+        for fname in os.listdir(vcpkg_bin):
+            if fname.lower().endswith('.dll'):
+                dll_path = os.path.join(vcpkg_bin, fname)
+                if not any(b[0] == dll_path for b in binaries):
+                    binaries.append((dll_path, '.'))
 
 a = Analysis(
     [os.path.join(project_root, 'launcher', 'main.py')],

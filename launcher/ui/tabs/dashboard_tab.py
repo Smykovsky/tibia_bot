@@ -78,7 +78,7 @@ class DashboardTab(QWidget):
         info_grid.addWidget(self.lbl_char_pos, 1, 0)
         info_grid.addWidget(self.lbl_char_cap, 1, 1)
 
-        self.lbl_client_info = QLabel("Client: Searching for DBVictory.exe / Tibia.exe...")
+        self.lbl_client_info = QLabel("Client: Searching for dbvStart.exe / DBVictory.exe / Tibia.exe...")
         self.lbl_client_info.setStyleSheet("color: #f59e0b; font-size: 11px; font-weight: 600;")
         info_grid.addWidget(self.lbl_client_info, 2, 0, 1, 2)
 
@@ -155,15 +155,31 @@ class DashboardTab(QWidget):
     def on_start_engine(self):
         if not self.process.is_running():
             try:
-                self.process.start()
-                self.client.connect()
+                started = self.process.start()
+                if started:
+                    self.append_log(f"Started Engine process: {self.process.binary_path}")
+                    # Give socket a small moment to accept connections
+                    QTimer.singleShot(600, self._connect_ipc)
+                else:
+                    self.append_log(f"Engine process could not be started.")
             except Exception as e:
                 self.append_log(f"Error starting engine: {e}")
         else:
             try:
                 self.client.resume_engine()
-            except:
-                pass
+                self.append_log("Resumed Engine execution.")
+            except Exception as e:
+                self.append_log(f"Error resuming engine: {e}")
+
+    def _connect_ipc(self):
+        try:
+            connected = self.client.connect()
+            if connected:
+                self.append_log("IPC connected to tibia_engine on port 8765.")
+            else:
+                self.append_log("Warning: IPC connection to 127.0.0.1:8765 failed. Will retry automatically.")
+        except Exception as e:
+            self.append_log(f"IPC connection error: {e}")
 
     def on_pause_engine(self):
         try:

@@ -36,10 +36,14 @@ namespace bot::game {
 
 class UniversalGameAdapter : public IGameAdapter {
 public:
-    UniversalGameAdapter(const std::string& defaultProcess = "DBVictory.exe")
+    UniversalGameAdapter(const std::string& defaultProcess = "dbvStart.exe")
         : m_targetProcess(defaultProcess) {
         
         m_candidates = {
+            "dbvStart.exe",
+            "dbvstart.exe",
+            "dbvStart",
+            "dbvstart",
             "DBVictory.exe",
             "dbvictory.exe",
             "DBVictory",
@@ -157,8 +161,10 @@ public:
                 std::string lowerTitle = title;
                 std::transform(lowerTitle.begin(), lowerTitle.end(), lowerTitle.begin(), ::tolower);
 
-                // Check for "dbvictory" in window title
-                if (lowerTitle.find("dbvictory") != std::string::npos || lowerTitle.find("tibia") != std::string::npos) {
+                // Check for "dbvictory", "dbv" or "tibia" in window title
+                if (lowerTitle.find("dbvictory") != std::string::npos ||
+                    lowerTitle.find("dbv") != std::string::npos ||
+                    lowerTitle.find("tibia") != std::string::npos) {
                     DWORD procId = 0;
                     GetWindowThreadProcessId(hwnd, &procId);
                     if (procId > 0) {
@@ -167,7 +173,6 @@ public:
                         ctx->found = true;
 
                         // Parse Nickname: format "DBVictory: World - {nickname}"
-                        // Look for hyphen separator
                         size_t dashPos = title.find(" - ");
                         if (dashPos != std::string::npos && dashPos + 3 < title.size()) {
                             ctx->nick = title.substr(dashPos + 3);
@@ -190,7 +195,23 @@ public:
 
         if (winCtx.found) {
             m_processId = winCtx.pid;
-            m_matchedBinary = "DBVictory.exe";
+            m_matchedBinary = "dbvStart.exe";
+
+            // Resolve exact executable file name via WinAPI if possible
+            HANDLE hProc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, winCtx.pid);
+            if (hProc) {
+                char exeBuf[MAX_PATH];
+                DWORD dwSize = sizeof(exeBuf);
+                if (QueryFullProcessImageNameA(hProc, 0, exeBuf, &dwSize)) {
+                    std::string fullPath(exeBuf);
+                    size_t slash = fullPath.find_last_of("\\/");
+                    if (slash != std::string::npos) {
+                        m_matchedBinary = fullPath.substr(slash + 1);
+                    }
+                }
+                CloseHandle(hProc);
+            }
+
             m_windowTitle = winCtx.title;
             m_extractedNick = winCtx.nick;
             m_attached = true;
@@ -219,6 +240,36 @@ public:
                             m_processId = pe.th32ProcessID;
                             m_matchedBinary = currentExe;
                             m_attached = true;
+
+                            // Scan window title for this process
+                            struct TitleCtx {
+                                DWORD targetPid;
+                                std::string title;
+                                std::string nick;
+                            } tCtx{ (DWORD)m_processId, "", "" };
+
+                            EnumWindows([](HWND hwnd, LPARAM lParam) -> BOOL {
+                                auto* pCtx = reinterpret_cast<TitleCtx*>(lParam);
+                                DWORD procId = 0;
+                                GetWindowThreadProcessId(hwnd, &procId);
+                                if (procId == pCtx->targetPid && IsWindowVisible(hwnd)) {
+                                    char buf[512];
+                                    int l = GetWindowTextA(hwnd, buf, sizeof(buf));
+                                    if (l > 0) {
+                                        pCtx->title = std::string(buf, l);
+                                        size_t dash = pCtx->title.find(" - ");
+                                        if (dash != std::string::npos && dash + 3 < pCtx->title.size()) {
+                                            pCtx->nick = pCtx->title.substr(dash + 3);
+                                        }
+                                        return FALSE;
+                                    }
+                                }
+                                return TRUE;
+                            }, reinterpret_cast<LPARAM>(&tCtx));
+
+                            m_windowTitle = tCtx.title;
+                            m_extractedNick = tCtx.nick;
+
                             CloseHandle(snapshot);
                             onProcessAttached();
                             return true;

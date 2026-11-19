@@ -102,7 +102,7 @@ class SettingsTab(QWidget):
         c_row = QHBoxLayout()
         self.cb_client_proc = QComboBox()
         self.cb_client_proc.setEditable(True)
-        self.cb_client_proc.addItems(["DBVictory.exe", "Tibia.exe", "otclient.exe", "client.exe", "tibia"])
+        self.cb_client_proc.addItems(["dbvStart.exe", "DBVictory.exe", "Tibia.exe", "otclient.exe", "client.exe", "tibia"])
 
         btn_apply_client = QPushButton("Set Target Client")
         btn_apply_client.setProperty("class", "primaryButton")
@@ -118,7 +118,7 @@ class SettingsTab(QWidget):
         c_row.addStretch()
         c_layout.addLayout(c_row)
 
-        self.lbl_adapter_status = QLabel("Status: Adapter searching for DBVictory.exe / Tibia.exe...")
+        self.lbl_adapter_status = QLabel("Status: Adapter searching for dbvStart.exe / DBVictory.exe / Tibia.exe...")
         self.lbl_adapter_status.setStyleSheet("color: #38bdf8; font-size: 12px; font-weight: 600; padding-top: 4px;")
         c_layout.addWidget(self.lbl_adapter_status)
 

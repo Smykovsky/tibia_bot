@@ -1,7 +1,7 @@
 {
     "Client": {
-        "targetProcess": "DBVictory.exe",
-        "candidates": ["DBVictory.exe", "dbvictory.exe", "Tibia.exe", "tibia.exe", "otclient.exe", "client.exe"]
+        "targetProcess": "dbvStart.exe",
+        "candidates": ["dbvStart.exe", "dbvstart.exe", "DBVictory.exe", "dbvictory.exe", "Tibia.exe", "tibia.exe", "otclient.exe", "client.exe"]
     },
     "Healing": {
         "rules": [

@@ -34,7 +34,7 @@ int main(int argc, char* argv[]) {
     std::signal(SIGTERM, signalHandler);
 
     int port = 8765;
-    std::string targetClient = "DBVictory.exe";
+    std::string targetClient = "dbvStart.exe";
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "--port" && i + 1 < argc) {
