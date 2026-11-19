@@ -4,7 +4,8 @@ import sys
 
 block_cipher = None
 
-project_root = os.path.abspath(os.path.dirname(__file__))
+# In PyInstaller .spec files, __file__ is not defined. We use os.getcwd() or SPECPATH.
+project_root = os.path.abspath(SPECPATH if 'SPECPATH' in globals() else os.getcwd())
 
 # Data files to embed in bundle
 datas = [
