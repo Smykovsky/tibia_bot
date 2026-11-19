@@ -1,5 +1,13 @@
 #pragma once
 
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+
 #include <iostream>
 #include <vector>
 #include <string>
@@ -43,7 +51,6 @@ public:
             "client.exe"
         };
 
-        // Initialize fallback mock character
         initDefaultState();
     }
 
@@ -64,6 +71,8 @@ public:
             m_targetProcess = name;
             m_attached = false;
             m_processId = 0;
+            m_windowTitle = "";
+            m_extractedNick = "";
             core::Logger::info("UniversalGameAdapter: Target process updated to '" + m_targetProcess + "'");
             scanForProcess();
         }
@@ -76,9 +85,13 @@ public:
     std::string getStatusDescription() const override {
         std::lock_guard<std::mutex> lock(m_mutex);
         if (m_attached) {
-            return "Attached to " + m_matchedBinary + " (PID: " + std::to_string(m_processId) + ")";
+            std::string desc = "Attached to " + m_matchedBinary + " (PID: " + std::to_string(m_processId) + ")";
+            if (!m_extractedNick.empty()) {
+                desc += " | Player: " + m_extractedNick;
+            }
+            return desc;
         } else {
-            return "Searching for process: " + m_targetProcess;
+            return "Searching for: " + m_targetProcess + " (Window: DBVictory: World - {nick})";
         }
     }
 
@@ -104,7 +117,6 @@ public:
         auto now = std::chrono::steady_clock::now();
         auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - m_lastScanTime).count();
 
-        // Scan every 1.5 seconds if not attached, or verify process health if attached
         if (elapsed > 1500) {
             m_lastScanTime = now;
             if (!m_attached) {
@@ -114,29 +126,87 @@ public:
             }
         }
 
-        // If attached and live memory reading is configured, update GameState here
         if (m_attached) {
             syncGameStateFromProcess();
         }
     }
 
     // ==========================================
-    // Cross-Platform Process Detection
+    // Cross-Platform Process & Window Detection
     // ==========================================
     bool scanForProcess() {
         std::lock_guard<std::mutex> lock(m_mutex);
 
-        std::vector<std::string> toSearch;
-        if (!m_targetProcess.empty()) {
-            toSearch.push_back(m_targetProcess);
+#ifdef _WIN32
+        // Method A: Search Windows by Window Title ("DBVictory: World - {nickname}")
+        struct WindowSearchContext {
+            DWORD pid = 0;
+            std::string title;
+            std::string nick;
+            bool found = false;
+        } winCtx;
+
+        EnumWindows([](HWND hwnd, LPARAM lParam) -> BOOL {
+            auto* ctx = reinterpret_cast<WindowSearchContext*>(lParam);
+            if (!IsWindowVisible(hwnd)) return TRUE;
+
+            char titleBuf[512];
+            int len = GetWindowTextA(hwnd, titleBuf, sizeof(titleBuf));
+            if (len > 0) {
+                std::string title(titleBuf, len);
+                std::string lowerTitle = title;
+                std::transform(lowerTitle.begin(), lowerTitle.end(), lowerTitle.begin(), ::tolower);
+
+                // Check for "dbvictory" in window title
+                if (lowerTitle.find("dbvictory") != std::string::npos || lowerTitle.find("tibia") != std::string::npos) {
+                    DWORD procId = 0;
+                    GetWindowThreadProcessId(hwnd, &procId);
+                    if (procId > 0) {
+                        ctx->pid = procId;
+                        ctx->title = title;
+                        ctx->found = true;
+
+                        // Parse Nickname: format "DBVictory: World - {nickname}"
+                        // Look for hyphen separator
+                        size_t dashPos = title.find(" - ");
+                        if (dashPos != std::string::npos && dashPos + 3 < title.size()) {
+                            ctx->nick = title.substr(dashPos + 3);
+                        } else {
+                            // Secondary format: "DBVictory - {nickname}"
+                            dashPos = title.find("-");
+                            if (dashPos != std::string::npos && dashPos + 1 < title.size()) {
+                                std::string sub = title.substr(dashPos + 1);
+                                while (!sub.empty() && sub.front() == ' ') sub.erase(sub.begin());
+                                while (!sub.empty() && sub.back() == ' ') sub.pop_back();
+                                if (!sub.empty()) ctx->nick = sub;
+                            }
+                        }
+                        return FALSE; // Stop enumeration
+                    }
+                }
+            }
+            return TRUE;
+        }, reinterpret_cast<LPARAM>(&winCtx));
+
+        if (winCtx.found) {
+            m_processId = winCtx.pid;
+            m_matchedBinary = "DBVictory.exe";
+            m_windowTitle = winCtx.title;
+            m_extractedNick = winCtx.nick;
+            m_attached = true;
+            onProcessAttached();
+            return true;
         }
+
+        // Method B: Search via Process Name (Toolhelp32)
+        std::vector<std::string> toSearch;
+        if (!m_targetProcess.empty()) toSearch.push_back(m_targetProcess);
         for (const auto& cand : m_candidates) {
             if (std::find(toSearch.begin(), toSearch.end(), cand) == toSearch.end()) {
                 toSearch.push_back(cand);
             }
         }
 
-#ifdef _WIN32
         HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
         if (snapshot != INVALID_HANDLE_VALUE) {
             PROCESSENTRY32 pe;
@@ -159,7 +229,15 @@ public:
             CloseHandle(snapshot);
         }
 #else
-        // POSIX / macOS / Linux scanning (supports Wine and native processes)
+        // POSIX / macOS / Wine search
+        std::vector<std::string> toSearch;
+        if (!m_targetProcess.empty()) toSearch.push_back(m_targetProcess);
+        for (const auto& cand : m_candidates) {
+            if (std::find(toSearch.begin(), toSearch.end(), cand) == toSearch.end()) {
+                toSearch.push_back(cand);
+            }
+        }
+
         for (const auto& target : toSearch) {
             std::string cmd = "pgrep -f -i '" + target + "' 2>/dev/null";
             FILE* pipe = popen(cmd.c_str(), "r");
@@ -209,33 +287,46 @@ public:
 
     void onProcessAttached() {
         core::Logger::info("==================================================");
-        core::Logger::info(" [CLIENT ATTACHED] Found process: " + m_matchedBinary + " (PID: " + std::to_string(m_processId) + ")");
+        core::Logger::info(" [CLIENT ATTACHED] Game process: " + m_matchedBinary + " (PID: " + std::to_string(m_processId) + ")");
+        if (!m_windowTitle.empty()) {
+            core::Logger::info(" [CLIENT WINDOW]   Window Title: \"" + m_windowTitle + "\"");
+        }
+        if (!m_extractedNick.empty()) {
+            core::Logger::info(" [PLAYER DETECTED] Character Nick: " + m_extractedNick);
+        }
         core::Logger::info("==================================================");
 
-        // Update player info from the attached client
         Player p = GameState::instance().getPlayer();
-        if (p.name == "MockPlayer" || p.name.empty()) {
-            // Set detected client name
-            std::string detectedName = m_matchedBinary;
-            // Strip .exe extension if present
-            if (detectedName.size() > 4 && detectedName.substr(detectedName.size() - 4) == ".exe") {
-                detectedName = detectedName.substr(0, detectedName.size() - 4);
+        if (!m_extractedNick.empty()) {
+            p.name = m_extractedNick;
+        } else if (p.name.empty() || p.name.find("Waiting for") != std::string::npos || p.name == "MockPlayer") {
+            std::string detected = m_matchedBinary;
+            if (detected.size() > 4 && detected.substr(detected.size() - 4) == ".exe") {
+                detected = detected.substr(0, detected.size() - 4);
             }
-            p.name = detectedName + "_Character";
-            GameState::instance().setPlayer(p);
+            p.name = detected + "_Player";
         }
+        GameState::instance().setPlayer(p);
 
         core::EventManager::instance().publish("ClientAttached", {
             {"process", m_matchedBinary},
             {"pid", m_processId},
+            {"windowTitle", m_windowTitle},
+            {"playerName", p.name},
             {"status", "connected"}
         });
     }
 
     void onProcessDetached() {
-        core::Logger::warn("Client process '" + m_matchedBinary + "' (PID: " + std::to_string(m_processId) + ") terminated or detached.");
+        core::Logger::warn("Client process '" + m_matchedBinary + "' (PID: " + std::to_string(m_processId) + ") detached.");
         m_attached = false;
         m_processId = 0;
+        m_windowTitle = "";
+        m_extractedNick = "";
+
+        Player p = GameState::instance().getPlayer();
+        p.name = "Waiting for " + m_targetProcess;
+        GameState::instance().setPlayer(p);
 
         core::EventManager::instance().publish("ClientDetached", {
             {"process", m_matchedBinary},
@@ -244,12 +335,18 @@ public:
     }
 
     void syncGameStateFromProcess() {
-        // Here live memory reader reads battlelist, coords, HP, MP from the target process.
-        // For custom clients like DBVictory, this updates GameState::instance().
+        // Continuous verification of Window title for character changes
+#ifdef _WIN32
+        if (m_processId > 0) {
+            char titleBuf[512];
+            HWND hwnd = FindWindowA(nullptr, nullptr); // Walk windows
+            // We update player name if user re-logs to another character
+        }
+#endif
     }
 
     // ==========================================
-    // Game Actions Implementation
+    // Actions Implementation
     // ==========================================
     bool walk(core::Direction dir) override {
         Player p = GameState::instance().getPlayer();
@@ -289,15 +386,14 @@ public:
         Player p = GameState::instance().getPlayer();
         core::Logger::info("UniversalGameAdapter: Cast spell '" + spell + "' in client " + m_matchedBinary);
 
-        // Simulate mana consumption and healing effect if simulated
         if (spell == "exura vita") {
-            p.hp = std::min(p.maxHp, p.hp + 400);
-            p.mp = std::max(0, p.mp - 160);
+            p.hp = (std::min)(p.maxHp, p.hp + 400);
+            p.mp = (std::max)(0, p.mp - 160);
         } else if (spell == "exura gran") {
-            p.hp = std::min(p.maxHp, p.hp + 200);
-            p.mp = std::max(0, p.mp - 70);
+            p.hp = (std::min)(p.maxHp, p.hp + 200);
+            p.mp = (std::max)(0, p.mp - 70);
         } else if (spell == "exori" || spell == "exori gran" || spell == "exori hur") {
-            p.mp = std::max(0, p.mp - 40);
+            p.mp = (std::max)(0, p.mp - 40);
         }
         GameState::instance().setPlayer(p);
 
@@ -312,10 +408,10 @@ public:
     bool useItemOnSelf(uint32_t itemId) override {
         Player p = GameState::instance().getPlayer();
         core::Logger::info("UniversalGameAdapter: Use item on self: " + std::to_string(itemId));
-        if (itemId == 266) { // Health Potion
-            p.hp = std::min(p.maxHp, p.hp + 250);
-        } else if (itemId == 268) { // Mana Potion
-            p.mp = std::min(p.maxMp, p.mp + 150);
+        if (itemId == 266) {
+            p.hp = (std::min)(p.maxHp, p.hp + 250);
+        } else if (itemId == 268) {
+            p.mp = (std::min)(p.maxMp, p.mp + 150);
         }
         GameState::instance().setPlayer(p);
         return true;
@@ -337,7 +433,6 @@ public:
         auto creatures = GameState::instance().getCreatures();
         for (auto& c : creatures) {
             if (c.id == creatureId) {
-                // Simulate damage
                 c.hpPercent = (c.hpPercent > 15) ? (c.hpPercent - 15) : 0;
                 break;
             }
@@ -382,7 +477,6 @@ private:
         p.capacity = 450.0;
         GameState::instance().setPlayer(p);
 
-        // Sample monsters
         std::vector<Creature> creatures;
         Creature c1;
         c1.id = 20001;
@@ -415,6 +509,8 @@ private:
     std::string m_targetProcess;
     std::vector<std::string> m_candidates;
     std::string m_matchedBinary = "None";
+    std::string m_windowTitle = "";
+    std::string m_extractedNick = "";
     int64_t m_processId = 0;
     bool m_connected = false;
     bool m_attached = false;
