@@ -13,23 +13,30 @@ if(APPLE)
 endif()
 
 find_package(Threads REQUIRED)
-find_package(nlohmann_json 3.2.0 REQUIRED)
+find_package(nlohmann_json REQUIRED)
 
-# Find Lua
-find_path(LUA_INCLUDE_DIR lua.h
-    PATHS
-    /opt/homebrew/include/lua
-    /opt/homebrew/include/lua5.5
-    /opt/homebrew/include
-    /usr/local/include
-)
+# Find Lua (supports Homebrew, vcpkg, and system paths)
+find_package(Lua QUIET)
 
-find_library(LUA_LIBRARY
-    NAMES lua lua5.5 liblua
-    PATHS
-    /opt/homebrew/lib
-    /usr/local/lib
-)
+if(Lua_FOUND)
+    set(LUA_INCLUDE_DIR ${LUA_INCLUDE_DIR})
+    set(LUA_LIBRARY ${LUA_LIBRARIES})
+else()
+    find_path(LUA_INCLUDE_DIR lua.h
+        PATHS
+        /opt/homebrew/include/lua
+        /opt/homebrew/include/lua5.5
+        /opt/homebrew/include
+        /usr/local/include
+    )
+
+    find_library(LUA_LIBRARY
+        NAMES lua lua5.5 lua5.4 lua54 liblua
+        PATHS
+        /opt/homebrew/lib
+        /usr/local/lib
+    )
+endif()
 
 if(NOT LUA_INCLUDE_DIR OR NOT LUA_LIBRARY)
     message(FATAL_ERROR "Lua library or headers not found!")

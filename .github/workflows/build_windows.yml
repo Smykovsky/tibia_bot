@@ -2,9 +2,9 @@ name: Build Windows Single Executable
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [ '**' ]
   pull_request:
-    branches: [ main, master ]
+    branches: [ '**' ]
   workflow_dispatch:
 
 jobs:
@@ -44,6 +44,9 @@ jobs:
         run: |
           Copy-Item -Path "configs" -Destination "dist\configs" -Recurse -Force
           Copy-Item -Path "scripts" -Destination "dist\scripts" -Recurse -Force
+          if (Test-Path "$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows/bin/*.dll") {
+            Copy-Item "$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows/bin/*.dll" -Destination "dist\" -Force -ErrorAction SilentlyContinue
+          }
 
       - name: Upload TibiaBot Standalone Artifact
         uses: actions/upload-artifact@v4

@@ -412,5 +412,9 @@ CMAKE_WARN_DEPRECATED:INTERNAL=ON
 //Details about finding Threads
 FIND_PACKAGE_MESSAGE_DETAILS_Threads:INTERNAL=[TRUE][v()]
 //Details about finding nlohmann_json
-FIND_PACKAGE_MESSAGE_DETAILS_nlohmann_json:INTERNAL=[/opt/homebrew/share/cmake/nlohmann_json/nlohmann_jsonConfig.cmake][v3.12.0(3.2.0)]
+FIND_PACKAGE_MESSAGE_DETAILS_nlohmann_json:INTERNAL=[/opt/homebrew/share/cmake/nlohmann_json/nlohmann_jsonConfig.cmake][v3.12.0()]
+//ADVANCED property for variable: LUA_INCLUDE_DIR
+LUA_INCLUDE_DIR-ADVANCED:INTERNAL=1
+//ADVANCED property for variable: LUA_LIBRARY
+LUA_LIBRARY-ADVANCED:INTERNAL=1
 
