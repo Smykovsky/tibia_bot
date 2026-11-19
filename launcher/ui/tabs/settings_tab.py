@@ -1,4 +1,5 @@
 import os
+import sys
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QFrame, QLineEdit, QSpinBox, QComboBox, QMessageBox
