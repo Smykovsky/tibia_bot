@@ -39,29 +39,22 @@ jobs:
           python -m pip install --upgrade pip
           pip install PySide6-Essentials pyinstaller
 
-      - name: Prepare Runtime Dependencies for Bundling
-        run: |
-          if (Test-Path "$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows/bin/*.dll") {
-            Copy-Item "$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows/bin/*.dll" -Destination "engine\build\Release\" -Force -ErrorAction SilentlyContinue
-          }
-          $vcRedist = (Get-ChildItem -Path "C:\Program Files\Microsoft Visual Studio" -Recurse -Directory -Filter "Microsoft.VC*.CRT" -ErrorAction SilentlyContinue | Select-Object -First 1)
-          if ($vcRedist -and (Test-Path "$($vcRedist.FullName)\*.dll")) {
-            Copy-Item "$($vcRedist.FullName)\*.dll" -Destination "engine\build\Release\" -Force -ErrorAction SilentlyContinue
-          }
-
       - name: Bundle Standalone Executable via PyInstaller
         run: |
           pyinstaller TibiaBot.spec --clean --noconfirm
 
-      - name: Copy Configs, Scripts, Engine and DLLs to Distribution Directory
+      - name: Copy Configs, Scripts, Engine and Dependencies to Distribution Directory
         run: |
           Copy-Item -Path "configs" -Destination "dist\configs" -Recurse -Force
           Copy-Item -Path "scripts" -Destination "dist\scripts" -Recurse -Force
           if (Test-Path "engine\build\Release\tibia_engine.exe") {
             Copy-Item "engine\build\Release\tibia_engine.exe" -Destination "dist\tibia_engine.exe" -Force
           }
-          if (Test-Path "engine\build\Release\*.dll") {
-            Copy-Item "engine\build\Release\*.dll" -Destination "dist\" -Force -ErrorAction SilentlyContinue
+          if (Test-Path "engine\build\Release\lua.dll") {
+            Copy-Item "engine\build\Release\lua.dll" -Destination "dist\lua.dll" -Force
+          }
+          if (Test-Path "$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows/bin/lua.dll") {
+            Copy-Item "$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows/bin/lua.dll" -Destination "dist\lua.dll" -Force -ErrorAction SilentlyContinue
           }
 
       - name: Upload TibiaBot Standalone Artifact

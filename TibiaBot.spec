@@ -13,7 +13,7 @@ datas = [
     (os.path.join(project_root, 'scripts'), 'scripts'),
 ]
 
-# Binaries to embed in bundle (C++ Engine & runtime DLLs)
+# Binaries to embed in bundle (C++ Engine & runtime DLLs like lua.dll)
 binaries = []
 
 engine_candidates = [
@@ -23,24 +23,29 @@ engine_candidates = [
 ]
 engine_exe = next((c for c in engine_candidates if os.path.exists(c)), None)
 
+# CRT and system DLL prefixes that MUST NOT be bundled manually (avoids 0xc0000142 startup error)
+CRT_EXCLUDES = ('msvcp', 'vcruntime', 'concrt', 'vccorlib', 'api-ms-win', 'ucrtbase')
+
 if engine_exe:
     # Place executable at root of unpacked bundle
     binaries.append((engine_exe, '.'))
-    # Collect all DLLs alongside engine_exe (e.g. lua.dll)
+    # Collect non-system DLLs alongside engine_exe (specifically lua.dll)
     engine_dir = os.path.dirname(engine_exe)
     for fname in os.listdir(engine_dir):
-        if fname.lower().endswith('.dll'):
+        fl = fname.lower()
+        if fl.endswith('.dll') and not any(fl.startswith(ex) for ex in CRT_EXCLUDES):
             binaries.append((os.path.join(engine_dir, fname), '.'))
 else:
     print(f"WARNING: C++ Engine binary not found! Searched in: {engine_candidates}")
 
-# Also check vcpkg installed directory for DLLs in CI
+# Also check vcpkg installed directory for lua.dll in CI
 vcpkg_root = os.environ.get('VCPKG_INSTALLATION_ROOT')
 if vcpkg_root:
     vcpkg_bin = os.path.join(vcpkg_root, 'installed', 'x64-windows', 'bin')
     if os.path.exists(vcpkg_bin):
         for fname in os.listdir(vcpkg_bin):
-            if fname.lower().endswith('.dll'):
+            fl = fname.lower()
+            if fl.endswith('.dll') and not any(fl.startswith(ex) for ex in CRT_EXCLUDES):
                 dll_path = os.path.join(vcpkg_bin, fname)
                 if not any(b[0] == dll_path for b in binaries):
                     binaries.append((dll_path, '.'))
