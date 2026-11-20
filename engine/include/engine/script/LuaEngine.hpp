@@ -42,16 +42,7 @@ public:
             return false;
         }
 
-        // Open safe standard libraries
-        luaL_requiref(m_L, "_G", luaopen_base, 1);
-        lua_pop(m_L, 1);
-        luaL_requiref(m_L, "table", luaopen_table, 1);
-        lua_pop(m_L, 1);
-        luaL_requiref(m_L, "string", luaopen_string, 1);
-        lua_pop(m_L, 1);
-        luaL_requiref(m_L, "math", luaopen_math, 1);
-        lua_pop(m_L, 1);
-
+        luaL_openlibs(m_L);
         registerBindings();
         core::Logger::info("LuaEngine initialized successfully");
         return true;

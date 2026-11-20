@@ -44,8 +44,15 @@ public:
         auto in_time_t = std::chrono::system_clock::to_time_t(now);
         auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()) % 1000;
 
+        std::tm tm_buf{};
+#ifdef _WIN32
+        localtime_s(&tm_buf, &in_time_t);
+#else
+        localtime_r(&in_time_t, &tm_buf);
+#endif
+
         std::stringstream ss;
-        ss << std::put_time(std::localtime(&in_time_t), "%Y-%m-%d %H:%M:%S")
+        ss << std::put_time(&tm_buf, "%Y-%m-%d %H:%M:%S")
            << '.' << std::setfill('0') << std::setw(3) << ms.count();
         std::string timeStr = ss.str();
 

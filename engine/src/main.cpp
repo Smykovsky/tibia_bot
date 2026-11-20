@@ -26,8 +26,13 @@
 LONG WINAPI CrashFilter(EXCEPTION_POINTERS* ep) {
     DWORD code = ep->ExceptionRecord ? ep->ExceptionRecord->ExceptionCode : 0;
     void* addr = ep->ExceptionRecord ? ep->ExceptionRecord->ExceptionAddress : nullptr;
-    std::fprintf(stderr, "[FATAL] Unhandled Exception 0x%08lX at address %p\n", code, addr);
-    std::fprintf(stdout, "[FATAL] Unhandled Exception 0x%08lX at address %p\n", code, addr);
+    char modName[MAX_PATH] = "unknown";
+    HMODULE hMod = NULL;
+    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)addr, &hMod)) {
+        GetModuleFileNameA(hMod, modName, sizeof(modName));
+    }
+    std::fprintf(stderr, "[FATAL] Unhandled Exception 0x%08lX at address %p (Module: %s)\n", code, addr, modName);
+    std::fprintf(stdout, "[FATAL] Unhandled Exception 0x%08lX at address %p (Module: %s)\n", code, addr, modName);
     std::fflush(stderr);
     std::fflush(stdout);
     return EXCEPTION_EXECUTE_HANDLER;
@@ -69,6 +74,9 @@ int main(int argc, char* argv[]) {
                 targetClient = argv[++i];
             }
         }
+
+        std::fprintf(stdout, "[Engine-Init] Bootstrapping Engine (Port: %d, Client: %s)...\n", port, targetClient.c_str());
+        std::fflush(stdout);
 
         bot::core::Logger::info("=========================================");
         bot::core::Logger::info("   TibiaBot C++ Engine (Shrouded Model)  ");
