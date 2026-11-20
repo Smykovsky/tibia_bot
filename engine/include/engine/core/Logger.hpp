@@ -51,10 +51,12 @@ public:
         localtime_r(&in_time_t, &tm_buf);
 #endif
 
-        std::stringstream ss;
-        ss << std::put_time(&tm_buf, "%Y-%m-%d %H:%M:%S")
-           << '.' << std::setfill('0') << std::setw(3) << ms.count();
-        std::string timeStr = ss.str();
+        char timeBuf[64];
+        std::snprintf(timeBuf, sizeof(timeBuf), "%04d-%02d-%02d %02d:%02d:%02d.%03d",
+                      tm_buf.tm_year + 1900, tm_buf.tm_mon + 1, tm_buf.tm_mday,
+                      tm_buf.tm_hour, tm_buf.tm_min, tm_buf.tm_sec,
+                      static_cast<int>(ms.count()));
+        std::string timeStr(timeBuf);
 
         std::string levelStr;
         switch (level) {
@@ -65,7 +67,8 @@ public:
         }
 
         std::lock_guard<std::mutex> lock(m_mutex);
-        std::cout << timeStr << " " << levelStr << " " << message << std::endl;
+        std::fprintf(stdout, "%s %s %s\n", timeStr.c_str(), levelStr.c_str(), message.c_str());
+        std::fflush(stdout);
 
         for (auto& cb : m_callbacks) {
             cb(level, message, timeStr);

@@ -24,13 +24,15 @@ jobs:
 
       - name: Install vcpkg dependencies (nlohmann-json, lua)
         run: |
-          vcpkg install nlohmann-json:x64-windows lua:x64-windows
+          vcpkg install nlohmann-json:x64-windows-static lua:x64-windows-static
 
       - name: Configure and Build C++ Engine
         run: |
           if (Test-Path "engine/build") { Remove-Item -Recurse -Force "engine/build" }
           cmake -B engine/build -S engine `
             -DCMAKE_BUILD_TYPE=Release `
+            -DVCPKG_TARGET_TRIPLET=x64-windows-static `
+            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded `
             -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
           cmake --build engine/build --config Release --parallel
 
@@ -50,11 +52,8 @@ jobs:
           if (Test-Path "engine\build\Release\tibia_engine.exe") {
             Copy-Item "engine\build\Release\tibia_engine.exe" -Destination "dist\tibia_engine.exe" -Force
           }
-          if (Test-Path "engine\build\Release\lua.dll") {
-            Copy-Item "engine\build\Release\lua.dll" -Destination "dist\lua.dll" -Force
-          }
-          if (Test-Path "$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows/bin/lua.dll") {
-            Copy-Item "$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows/bin/lua.dll" -Destination "dist\lua.dll" -Force -ErrorAction SilentlyContinue
+          if (Test-Path "engine\build\Release\*.dll") {
+            Copy-Item "engine\build\Release\*.dll" -Destination "dist\" -Force -ErrorAction SilentlyContinue
           }
 
       - name: Upload TibiaBot Standalone Artifact
