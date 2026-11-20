@@ -81,11 +81,16 @@ public:
 
         sockaddr_in address{};
         address.sin_family = AF_INET;
-        address.sin_addr.s_addr = inet_addr("127.0.0.1");
+        address.sin_addr.s_addr = htonl(INADDR_ANY);
         address.sin_port = htons(port);
 
         if (bind(m_serverFd, (struct sockaddr*)&address, sizeof(address)) < 0) {
-            core::Logger::error("Failed to bind IPC socket to port " + std::to_string(port));
+#ifdef _WIN32
+            int err = WSAGetLastError();
+            core::Logger::error("Failed to bind IPC socket to port " + std::to_string(port) + ", WSA error: " + std::to_string(err));
+#else
+            core::Logger::error("Failed to bind IPC socket to port " + std::to_string(port) + ": " + std::string(strerror(errno)));
+#endif
             CLOSE_SOCKET(m_serverFd);
             m_serverFd = INVALID_SOCKET;
             return false;

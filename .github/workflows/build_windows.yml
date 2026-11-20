@@ -39,6 +39,16 @@ jobs:
           python -m pip install --upgrade pip
           pip install PySide6-Essentials pyinstaller
 
+      - name: Prepare Runtime Dependencies for Bundling
+        run: |
+          if (Test-Path "$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows/bin/*.dll") {
+            Copy-Item "$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows/bin/*.dll" -Destination "engine\build\Release\" -Force -ErrorAction SilentlyContinue
+          }
+          $vcRedist = (Get-ChildItem -Path "C:\Program Files\Microsoft Visual Studio" -Recurse -Directory -Filter "Microsoft.VC*.CRT" -ErrorAction SilentlyContinue | Select-Object -First 1)
+          if ($vcRedist -and (Test-Path "$($vcRedist.FullName)\*.dll")) {
+            Copy-Item "$($vcRedist.FullName)\*.dll" -Destination "engine\build\Release\" -Force -ErrorAction SilentlyContinue
+          }
+
       - name: Bundle Standalone Executable via PyInstaller
         run: |
           pyinstaller TibiaBot.spec --clean --noconfirm
@@ -52,9 +62,6 @@ jobs:
           }
           if (Test-Path "engine\build\Release\*.dll") {
             Copy-Item "engine\build\Release\*.dll" -Destination "dist\" -Force -ErrorAction SilentlyContinue
-          }
-          if (Test-Path "$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows/bin/*.dll") {
-            Copy-Item "$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows/bin/*.dll" -Destination "dist\" -Force -ErrorAction SilentlyContinue
           }
 
       - name: Upload TibiaBot Standalone Artifact

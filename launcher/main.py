@@ -28,10 +28,10 @@ def main():
         try:
             started = engine_proc.start()
             if started:
-                for _ in range(6):
+                for _ in range(12):
                     if engine_client.connect():
                         break
-                    time.sleep(0.2)
+                    time.sleep(0.25)
         except Exception as e:
             print(f"Warning: Failed to auto-start engine: {e}")
 

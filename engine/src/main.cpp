@@ -47,15 +47,22 @@ int main(int argc, char* argv[]) {
     bot::core::Logger::info("=========================================");
     bot::core::Logger::info("   TibiaBot C++ Engine (Shrouded Model)  ");
     bot::core::Logger::info("   Target Client: " + targetClient);
+    bot::core::Logger::info("   Port: " + std::to_string(port));
     bot::core::Logger::info("=========================================");
 
-    // 1. Setup Config
+    // 1. Start IPC Server FIRST so Launcher connects immediately
+    if (!bot::ipc::IpcServer::instance().start(port)) {
+        bot::core::Logger::error("Failed to start IPC Server on port " + std::to_string(port));
+        return 1;
+    }
+
+    // 2. Setup Config
     bot::core::ConfigManager::instance().setConfigDir("configs");
 
-    // 2. Setup Universal Game Adapter (DBVictory.exe / Tibia.exe / etc.)
+    // 3. Setup Universal Game Adapter (dbvStart.exe / Tibia.exe / etc.)
     auto gameAdapter = std::make_shared<bot::game::UniversalGameAdapter>(targetClient);
 
-    // 3. Register Modules
+    // 4. Register Modules
     auto healing = std::make_shared<bot::modules::HealingModule>(gameAdapter);
     auto cavebot = std::make_shared<bot::modules::CavebotModule>(gameAdapter);
     auto targeting = std::make_shared<bot::modules::TargetingModule>(gameAdapter);
@@ -93,22 +100,15 @@ int main(int argc, char* argv[]) {
     bot::core::ModuleManager::instance().registerModule(looting);
     bot::core::ModuleManager::instance().registerModule(smartAoe);
 
-    // 4. Initialize Lua Engine & Scripting
+    // 5. Initialize Lua Engine & Scripting
     bot::script::LuaEngine::instance().init(gameAdapter);
     bot::script::ScriptManager::instance().setScriptsDir("scripts");
     bot::script::ScriptManager::instance().scanScripts();
 
-    // 5. Initialize Engine Core (50ms tick rate)
+    // 6. Initialize Engine Core (50ms tick rate)
     if (!bot::core::Engine::instance().initialize(gameAdapter, 50)) {
         bot::core::Logger::error("Failed to start Engine");
-        return 1;
-    }
-
-    // 6. Start IPC Server for Launcher communication
-    if (!bot::ipc::IpcServer::instance().start(port)) {
-        bot::core::Logger::error("Failed to start IPC Server");
-        bot::core::Engine::instance().stop();
-        return 1;
+        // Keep IPC alive so GUI knows the error state
     }
 
     bot::core::Logger::info("TibiaBot Engine is up and running on port " + std::to_string(port) + ".");

@@ -10,6 +10,8 @@ class DashboardTab(QWidget):
         super().__init__(parent)
         self.client = engine_client
         self.process = engine_process
+        self.process.on_output_callback = lambda pfx, msg: self.append_log(f"[{pfx}] {msg}")
+        self.process.on_crash_callback = lambda code: self.append_log(f"[Engine] Process exited with code {code} (0x{code & 0xffffffff:08x})")
         self.init_ui()
 
     def init_ui(self):
@@ -158,8 +160,7 @@ class DashboardTab(QWidget):
                 started = self.process.start()
                 if started:
                     self.append_log(f"Started Engine process: {self.process.binary_path}")
-                    # Give socket a small moment to accept connections
-                    QTimer.singleShot(600, self._connect_ipc)
+                    QTimer.singleShot(300, lambda: self._connect_ipc(attempts_left=12))
                 else:
                     self.append_log(f"Engine process could not be started.")
             except Exception as e:
@@ -171,15 +172,19 @@ class DashboardTab(QWidget):
             except Exception as e:
                 self.append_log(f"Error resuming engine: {e}")
 
-    def _connect_ipc(self):
+    def _connect_ipc(self, attempts_left=12):
         try:
             connected = self.client.connect()
             if connected:
                 self.append_log("IPC connected to tibia_engine on port 8765.")
-            else:
-                self.append_log("Warning: IPC connection to 127.0.0.1:8765 failed. Will retry automatically.")
-        except Exception as e:
-            self.append_log(f"IPC connection error: {e}")
+                return
+        except Exception:
+            pass
+
+        if attempts_left > 1:
+            QTimer.singleShot(300, lambda: self._connect_ipc(attempts_left - 1))
+        else:
+            self.append_log("Warning: IPC connection to 127.0.0.1:8765 failed. Check Engine console logs above.")
 
     def on_pause_engine(self):
         try:
