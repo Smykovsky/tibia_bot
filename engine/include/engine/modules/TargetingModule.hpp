@@ -49,6 +49,13 @@ public:
         if (monsters.empty()) {
             if (player.targetId != 0) {
                 m_adapter->stopAttack();
+            } else if (!m_settings.empty()) {
+                auto nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now().time_since_epoch()).count();
+                if (nowMs - m_lastCycleMs >= 1500) {
+                    m_lastCycleMs = nowMs;
+                    m_adapter->attackCreature(0);
+                }
             }
             return;
         }
@@ -167,6 +174,7 @@ private:
     std::shared_ptr<game::IGameAdapter> m_adapter;
     std::vector<MonsterSetting> m_settings;
     int64_t m_lastSpellMs{0};
+    int64_t m_lastCycleMs{0};
 };
 
 } // namespace bot::modules

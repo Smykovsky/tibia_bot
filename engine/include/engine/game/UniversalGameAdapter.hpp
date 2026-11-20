@@ -17,10 +17,13 @@
 #include <sstream>
 #include <array>
 #include <cctype>
+#include <cmath>
+#include <cstring>
 
 #ifdef _WIN32
 #include <windows.h>
 #include <tlhelp32.h>
+#include <psapi.h>
 #else
 #include <unistd.h>
 #include <sys/types.h>
@@ -58,7 +61,14 @@ public:
         initDefaultState();
     }
 
-    virtual ~UniversalGameAdapter() = default;
+    virtual ~UniversalGameAdapter() {
+#ifdef _WIN32
+        if (m_hProcess && m_hProcess != INVALID_HANDLE_VALUE) {
+            CloseHandle(m_hProcess);
+            m_hProcess = NULL;
+        }
+#endif
+    }
 
     std::string getAdapterName() const override {
         return "UniversalGameAdapter";
@@ -77,6 +87,14 @@ public:
             m_processId = 0;
             m_windowTitle = "";
             m_extractedNick = "";
+#ifdef _WIN32
+            if (m_hProcess && m_hProcess != INVALID_HANDLE_VALUE) {
+                CloseHandle(m_hProcess);
+                m_hProcess = NULL;
+            }
+            m_hwnd = NULL;
+            m_mem = {};
+#endif
             core::Logger::info("UniversalGameAdapter: Target process updated to '" + m_targetProcess + "'");
             scanForProcess();
         }
@@ -110,6 +128,14 @@ public:
         m_connected = false;
         m_attached = false;
         m_processId = 0;
+#ifdef _WIN32
+        if (m_hProcess && m_hProcess != INVALID_HANDLE_VALUE) {
+            CloseHandle(m_hProcess);
+            m_hProcess = NULL;
+        }
+        m_hwnd = NULL;
+        m_mem = {};
+#endif
         core::Logger::info("UniversalGameAdapter: Disconnected from client.");
     }
 
@@ -151,7 +177,7 @@ public:
                 }
             }
 
-            // Method 1: Search via Process Name (Toolhelp32) - Fast, safe, no window message hooks
+            // Method 1: Search via Process Name (Toolhelp32)
             HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
             if (snapshot != INVALID_HANDLE_VALUE) {
                 PROCESSENTRY32 pe{};
@@ -169,9 +195,10 @@ public:
                                 // Find window title specifically for this PID
                                 struct TitleCtx {
                                     DWORD targetPid;
+                                    HWND targetHwnd;
                                     std::string title;
                                     std::string nick;
-                                } tCtx{ (DWORD)m_processId, "", "" };
+                                } tCtx{ (DWORD)m_processId, NULL, "", "" };
 
                                 EnumWindows([](HWND hwnd, LPARAM lParam) -> BOOL {
                                     auto* pCtx = reinterpret_cast<TitleCtx*>(lParam);
@@ -181,6 +208,7 @@ public:
                                         char buf[512];
                                         int l = GetWindowTextA(hwnd, buf, sizeof(buf));
                                         if (l > 0) {
+                                            pCtx->targetHwnd = hwnd;
                                             pCtx->title = std::string(buf, l);
                                             size_t dash = pCtx->title.find(" - ");
                                             if (dash != std::string::npos && dash + 3 < pCtx->title.size()) {
@@ -192,6 +220,7 @@ public:
                                     return TRUE;
                                 }, reinterpret_cast<LPARAM>(&tCtx));
 
+                                m_hwnd = tCtx.targetHwnd;
                                 m_windowTitle = tCtx.title;
                                 m_extractedNick = tCtx.nick;
 
@@ -207,6 +236,7 @@ public:
             // Method 2: Search by Window Title as fallback
             struct WindowSearchContext {
                 DWORD pid = 0;
+                HWND hwnd = NULL;
                 std::string title;
                 std::string nick;
                 bool found = false;
@@ -232,6 +262,7 @@ public:
                         GetWindowThreadProcessId(hwnd, &procId);
                         if (procId > 0) {
                             ctx->pid = procId;
+                            ctx->hwnd = hwnd;
                             ctx->title = title;
                             ctx->found = true;
 
@@ -248,6 +279,7 @@ public:
 
             if (winCtx.found) {
                 m_processId = winCtx.pid;
+                m_hwnd = winCtx.hwnd;
                 m_matchedBinary = "dbvStart.exe";
 
                 HANDLE hProc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, winCtx.pid);
@@ -341,6 +373,21 @@ public:
         }
         core::Logger::info("==================================================");
 
+#ifdef _WIN32
+        if (m_hProcess && m_hProcess != INVALID_HANDLE_VALUE) {
+            CloseHandle(m_hProcess);
+            m_hProcess = NULL;
+        }
+        m_hProcess = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, FALSE, static_cast<DWORD>(m_processId));
+        if (m_hProcess) {
+            core::Logger::info("UniversalGameAdapter: Memory handle opened successfully for PID " + std::to_string(m_processId));
+        } else {
+            core::Logger::warn("UniversalGameAdapter: Could not open process memory (Error: " + std::to_string(GetLastError()) + "). Run as Administrator if needed.");
+        }
+        m_mem = {};
+        scanMemoryForPlayer();
+#endif
+
         Player p = GameState::instance().getPlayer();
         if (!m_extractedNick.empty()) {
             p.name = m_extractedNick;
@@ -368,6 +415,14 @@ public:
         m_processId = 0;
         m_windowTitle = "";
         m_extractedNick = "";
+#ifdef _WIN32
+        if (m_hProcess && m_hProcess != INVALID_HANDLE_VALUE) {
+            CloseHandle(m_hProcess);
+            m_hProcess = NULL;
+        }
+        m_hwnd = NULL;
+        m_mem = {};
+#endif
 
         Player p = GameState::instance().getPlayer();
         p.name = "Waiting for " + m_targetProcess;
@@ -379,13 +434,390 @@ public:
         });
     }
 
-    void syncGameStateFromProcess() {
-        // Continuous verification of Window title for character changes
 #ifdef _WIN32
-        if (m_processId > 0) {
+    void scanMemoryForPlayer() {
+        if (!m_hProcess || m_hProcess == INVALID_HANDLE_VALUE) return;
+
+        auto now = std::chrono::steady_clock::now();
+        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - m_lastMemScanTime).count();
+        if (elapsed < 2000 && m_mem.scanAttempts > 0) return;
+        m_lastMemScanTime = now;
+        m_mem.scanAttempts++;
+
+        std::string nick = m_extractedNick;
+        if (nick.empty()) return;
+
+        uintptr_t currentAddr = 0;
+        MEMORY_BASIC_INFORMATION mbi;
+        std::vector<uint8_t> buffer;
+
+        core::Logger::info("UniversalGameAdapter: Scanning process memory for player '" + nick + "'...");
+
+        while (VirtualQueryEx(m_hProcess, reinterpret_cast<LPCVOID>(currentAddr), &mbi, sizeof(mbi))) {
+            if (mbi.State == MEM_COMMIT && 
+                (mbi.Protect == PAGE_READWRITE || mbi.Protect == PAGE_EXECUTE_READWRITE) &&
+                !(mbi.Protect & PAGE_GUARD)) {
+
+                size_t regionSize = mbi.RegionSize;
+                if (regionSize > 4 * 1024 * 1024) regionSize = 4 * 1024 * 1024;
+
+                buffer.resize(regionSize);
+                SIZE_T bytesRead = 0;
+                if (ReadProcessMemory(m_hProcess, mbi.BaseAddress, buffer.data(), regionSize, &bytesRead) && bytesRead > nick.size()) {
+                    
+                    const uint8_t* pBuf = buffer.data();
+                    size_t limit = bytesRead - nick.size();
+
+                    for (size_t i = 0; i < limit; ++i) {
+                        if (std::memcmp(pBuf + i, nick.data(), nick.size()) == 0) {
+                            uintptr_t matchAddr = reinterpret_cast<uintptr_t>(mbi.BaseAddress) + i;
+
+                            size_t windowStart = (i >= 512) ? (i - 512) : 0;
+                            size_t windowEnd = (i + 512 + sizeof(uint16_t) * 2 + 1 <= bytesRead) ? (i + 512) : (bytesRead - 5);
+
+                            uintptr_t foundPosAddr = 0;
+                            bool isUint16 = true;
+
+                            for (size_t j = windowStart; j < windowEnd; ++j) {
+                                uint16_t x = *reinterpret_cast<const uint16_t*>(pBuf + j);
+                                uint16_t y = *reinterpret_cast<const uint16_t*>(pBuf + j + 2);
+                                uint8_t z = *(pBuf + j + 4);
+
+                                if (x >= 500 && x <= 65000 && y >= 500 && y <= 65000 && z <= 15) {
+                                    foundPosAddr = reinterpret_cast<uintptr_t>(mbi.BaseAddress) + j;
+                                    isUint16 = true;
+                                    break;
+                                }
+
+                                if (j + 12 <= bytesRead) {
+                                    int32_t x32 = *reinterpret_cast<const int32_t*>(pBuf + j);
+                                    int32_t y32 = *reinterpret_cast<const int32_t*>(pBuf + j + 4);
+                                    int32_t z32 = *reinterpret_cast<const int32_t*>(pBuf + j + 8);
+                                    if (x32 >= 500 && x32 <= 65000 && y32 >= 500 && y32 <= 65000 && z32 >= 0 && z32 <= 15) {
+                                        foundPosAddr = reinterpret_cast<uintptr_t>(mbi.BaseAddress) + j;
+                                        isUint16 = false;
+                                        break;
+                                    }
+                                }
+                            }
+
+                            if (foundPosAddr != 0) {
+                                m_mem.posAddr = foundPosAddr;
+                                m_mem.posIsUint16 = isUint16;
+
+                                size_t statStart = i;
+                                size_t statEnd = (i + 1024 <= bytesRead) ? (i + 1024) : bytesRead;
+
+                                for (size_t k = statStart; k + 16 <= statEnd; k += 4) {
+                                    double d1 = *reinterpret_cast<const double*>(pBuf + k);
+                                    double d2 = *reinterpret_cast<const double*>(pBuf + k + 8);
+                                    if (!m_mem.hpAddr && d1 > 0.0 && d1 <= d2 && d2 < 100000000.0 && d2 >= 50.0) {
+                                        m_mem.hpAddr = reinterpret_cast<uintptr_t>(mbi.BaseAddress) + k;
+                                        m_mem.maxHpAddr = reinterpret_cast<uintptr_t>(mbi.BaseAddress) + k + 8;
+                                        m_mem.hpIsDouble = true;
+                                    }
+
+                                    if (m_mem.hpAddr && !m_mem.mpAddr && k >= (m_mem.hpAddr - reinterpret_cast<uintptr_t>(mbi.BaseAddress) + 16)) {
+                                        if (d1 >= 0.0 && d1 <= d2 && d2 < 100000000.0 && d2 >= 10.0) {
+                                            m_mem.mpAddr = reinterpret_cast<uintptr_t>(mbi.BaseAddress) + k;
+                                            m_mem.maxMpAddr = reinterpret_cast<uintptr_t>(mbi.BaseAddress) + k + 8;
+                                            m_mem.mpIsDouble = true;
+                                        }
+                                    }
+
+                                    if (!m_mem.hpAddr) {
+                                        uint32_t u1 = *reinterpret_cast<const uint32_t*>(pBuf + k);
+                                        uint32_t u2 = *reinterpret_cast<const uint32_t*>(pBuf + k + 4);
+                                        if (u1 > 0 && u1 <= u2 && u2 < 100000000 && u2 >= 50) {
+                                            m_mem.hpAddr = reinterpret_cast<uintptr_t>(mbi.BaseAddress) + k;
+                                            m_mem.maxHpAddr = reinterpret_cast<uintptr_t>(mbi.BaseAddress) + k + 4;
+                                            m_mem.hpIsDouble = false;
+                                        }
+                                    }
+
+                                    if (!m_mem.lvlAddr) {
+                                        int32_t lvl = *reinterpret_cast<const int32_t*>(pBuf + k);
+                                        if (lvl >= 1 && lvl <= 5000) {
+                                            m_mem.lvlAddr = reinterpret_cast<uintptr_t>(mbi.BaseAddress) + k;
+                                            m_mem.lvlIsDouble = false;
+                                        }
+                                    }
+
+                                    if (!m_mem.capAddr && d1 >= 0.0 && d1 <= 500000.0) {
+                                        m_mem.capAddr = reinterpret_cast<uintptr_t>(mbi.BaseAddress) + k;
+                                        m_mem.capIsDouble = true;
+                                    }
+                                }
+
+                                m_mem.resolved = true;
+                                core::Logger::info("==================================================");
+                                core::Logger::info(" [MEMORY RESOLVED] Player entity hooked in RAM!");
+                                core::Logger::info("  - Position Addr: 0x" + toHex(m_mem.posAddr) + " (" + (m_mem.posIsUint16 ? "16-bit" : "32-bit") + ")");
+                                if (m_mem.hpAddr) core::Logger::info("  - HP Addr:       0x" + toHex(m_mem.hpAddr) + " (" + (m_mem.hpIsDouble ? "double" : "uint32") + ")");
+                                if (m_mem.mpAddr) core::Logger::info("  - MP Addr:       0x" + toHex(m_mem.mpAddr) + " (" + (m_mem.mpIsDouble ? "double" : "uint32") + ")");
+                                if (m_mem.lvlAddr) core::Logger::info("  - Level Addr:    0x" + toHex(m_mem.lvlAddr));
+                                if (m_mem.capAddr) core::Logger::info("  - Cap Addr:      0x" + toHex(m_mem.capAddr));
+                                core::Logger::info("==================================================");
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+            currentAddr = reinterpret_cast<uintptr_t>(mbi.BaseAddress) + mbi.RegionSize;
+        }
+    }
+
+    void scanMemoryForCreatures(const core::Position& playerPos) {
+        if (!m_hProcess || m_hProcess == INVALID_HANDLE_VALUE) return;
+        if (!m_mem.resolved || !m_mem.posAddr) return;
+
+        uintptr_t scanBase = (m_mem.posAddr > 0x100000) ? (m_mem.posAddr - 0x100000) : 0;
+        size_t scanSize = 0x200000;
+
+        std::vector<uint8_t> buf(scanSize);
+        SIZE_T bytesRead = 0;
+        if (!ReadProcessMemory(m_hProcess, reinterpret_cast<LPCVOID>(scanBase), buf.data(), scanSize, &bytesRead) || bytesRead < 64) {
+            return;
+        }
+
+        std::vector<Creature> creatures;
+        uint32_t generatedId = 20000;
+
+        for (size_t i = 0; i + 8 <= bytesRead; i += 2) {
+            uint16_t x = *reinterpret_cast<const uint16_t*>(buf.data() + i);
+            uint16_t y = *reinterpret_cast<const uint16_t*>(buf.data() + i + 2);
+            uint8_t z = *(buf.data() + i + 4);
+
+            if (z == playerPos.z && 
+                std::abs(static_cast<int>(x) - static_cast<int>(playerPos.x)) <= 8 &&
+                std::abs(static_cast<int>(y) - static_cast<int>(playerPos.y)) <= 8 &&
+                (x != playerPos.x || y != playerPos.y)) {
+
+                std::string creatureName = "";
+                size_t nStart = (i >= 128) ? (i - 128) : 0;
+                size_t nEnd = (i + 128 <= bytesRead) ? (i + 128) : bytesRead;
+
+                for (size_t j = nStart; j + 3 < nEnd; ++j) {
+                    if (std::isalpha(buf[j])) {
+                        size_t len = 0;
+                        while (j + len < nEnd && (std::isalnum(buf[j + len]) || buf[j + len] == ' ' || buf[j + len] == '-')) {
+                            len++;
+                        }
+                        if (len >= 3 && len <= 24) {
+                            std::string candidate(reinterpret_cast<const char*>(buf.data() + j), len);
+                            if (candidate != m_extractedNick && candidate.find("DBVictory") == std::string::npos && candidate.find("World") == std::string::npos) {
+                                creatureName = candidate;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                if (!creatureName.empty()) {
+                    bool alreadyExists = false;
+                    for (const auto& ec : creatures) {
+                        if (ec.position.x == x && ec.position.y == y && ec.position.z == z) {
+                            alreadyExists = true;
+                            break;
+                        }
+                    }
+                    if (!alreadyExists && creatures.size() < 20) {
+                        Creature c;
+                        c.id = ++generatedId;
+                        c.name = creatureName;
+                        c.position = {x, y, z};
+                        c.hpPercent = 100;
+                        c.type = CreatureType::Monster;
+                        creatures.push_back(c);
+                    }
+                }
+            }
+        }
+
+        if (!creatures.empty()) {
+            GameState::instance().setCreatures(creatures);
+        }
+    }
+#endif
+
+    void syncGameStateFromProcess() {
+#ifdef _WIN32
+        if (!m_attached || m_processId == 0) return;
+
+        if (!m_hProcess || m_hProcess == INVALID_HANDLE_VALUE) {
+            m_hProcess = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, FALSE, static_cast<DWORD>(m_processId));
+            if (!m_hProcess) return;
+        }
+
+        if (m_hwnd && IsWindow(m_hwnd)) {
             char titleBuf[512];
-            HWND hwnd = FindWindowA(nullptr, nullptr); // Walk windows
-            // We update player name if user re-logs to another character
+            int len = GetWindowTextA(m_hwnd, titleBuf, sizeof(titleBuf));
+            if (len > 0) {
+                std::string curTitle(titleBuf, len);
+                if (curTitle != m_windowTitle) {
+                    m_windowTitle = curTitle;
+                    size_t dash = curTitle.find(" - ");
+                    if (dash != std::string::npos && dash + 3 < curTitle.size()) {
+                        std::string newNick = curTitle.substr(dash + 3);
+                        if (newNick != m_extractedNick) {
+                            m_extractedNick = newNick;
+                            m_mem = {};
+                            core::Logger::info("UniversalGameAdapter: Character switched to '" + m_extractedNick + "'");
+                        }
+                    }
+                }
+            }
+        }
+
+        if (!m_mem.resolved) {
+            scanMemoryForPlayer();
+            return;
+        }
+
+        Player p = GameState::instance().getPlayer();
+        bool changed = false;
+
+        // Read Position
+        if (m_mem.posAddr) {
+            if (m_mem.posIsUint16) {
+                struct { uint16_t x; uint16_t y; uint8_t z; } rawPos{};
+                if (ReadProcessMemory(m_hProcess, reinterpret_cast<LPCVOID>(m_mem.posAddr), &rawPos, sizeof(rawPos), nullptr)) {
+                    if (rawPos.x >= 100 && rawPos.x <= 65000 && rawPos.y >= 100 && rawPos.y <= 65000 && rawPos.z <= 15) {
+                        if (p.position.x != rawPos.x || p.position.y != rawPos.y || p.position.z != rawPos.z) {
+                            p.position.x = rawPos.x;
+                            p.position.y = rawPos.y;
+                            p.position.z = rawPos.z;
+                            changed = true;
+                        }
+                    } else {
+                        m_mem.resolved = false;
+                        return;
+                    }
+                }
+            } else {
+                struct { int32_t x; int32_t y; int32_t z; } rawPos{};
+                if (ReadProcessMemory(m_hProcess, reinterpret_cast<LPCVOID>(m_mem.posAddr), &rawPos, sizeof(rawPos), nullptr)) {
+                    if (rawPos.x >= 100 && rawPos.x <= 65000 && rawPos.y >= 100 && rawPos.y <= 65000 && rawPos.z >= 0 && rawPos.z <= 15) {
+                        if (p.position.x != rawPos.x || p.position.y != rawPos.y || p.position.z != rawPos.z) {
+                            p.position.x = rawPos.x;
+                            p.position.y = rawPos.y;
+                            p.position.z = rawPos.z;
+                            changed = true;
+                        }
+                    } else {
+                        m_mem.resolved = false;
+                        return;
+                    }
+                }
+            }
+        }
+
+        // Read HP
+        if (m_mem.hpAddr) {
+            if (m_mem.hpIsDouble) {
+                double curHp = 0, maxHp = 0;
+                ReadProcessMemory(m_hProcess, reinterpret_cast<LPCVOID>(m_mem.hpAddr), &curHp, sizeof(double), nullptr);
+                if (m_mem.maxHpAddr) {
+                    ReadProcessMemory(m_hProcess, reinterpret_cast<LPCVOID>(m_mem.maxHpAddr), &maxHp, sizeof(double), nullptr);
+                }
+                if (curHp > 0.0 && curHp <= 100000000.0) {
+                    p.hp = static_cast<int32_t>(curHp);
+                    if (maxHp > 0.0) p.maxHp = static_cast<int32_t>(maxHp);
+                    changed = true;
+                }
+            } else {
+                uint32_t curHp = 0, maxHp = 0;
+                ReadProcessMemory(m_hProcess, reinterpret_cast<LPCVOID>(m_mem.hpAddr), &curHp, sizeof(uint32_t), nullptr);
+                if (m_mem.maxHpAddr) {
+                    ReadProcessMemory(m_hProcess, reinterpret_cast<LPCVOID>(m_mem.maxHpAddr), &maxHp, sizeof(uint32_t), nullptr);
+                }
+                if (curHp > 0 && curHp <= 100000000) {
+                    p.hp = static_cast<int32_t>(curHp);
+                    if (maxHp > 0) p.maxHp = static_cast<int32_t>(maxHp);
+                    changed = true;
+                }
+            }
+        }
+
+        // Read Mana
+        if (m_mem.mpAddr) {
+            if (m_mem.mpIsDouble) {
+                double curMp = 0, maxMp = 0;
+                ReadProcessMemory(m_hProcess, reinterpret_cast<LPCVOID>(m_mem.mpAddr), &curMp, sizeof(double), nullptr);
+                if (m_mem.maxMpAddr) {
+                    ReadProcessMemory(m_hProcess, reinterpret_cast<LPCVOID>(m_mem.maxMpAddr), &maxMp, sizeof(double), nullptr);
+                }
+                if (curMp >= 0.0 && curMp <= 100000000.0) {
+                    p.mp = static_cast<int32_t>(curMp);
+                    if (maxMp > 0.0) p.maxMp = static_cast<int32_t>(maxMp);
+                    changed = true;
+                }
+            } else {
+                uint32_t curMp = 0, maxMp = 0;
+                ReadProcessMemory(m_hProcess, reinterpret_cast<LPCVOID>(m_mem.mpAddr), &curMp, sizeof(uint32_t), nullptr);
+                if (m_mem.maxMpAddr) {
+                    ReadProcessMemory(m_hProcess, reinterpret_cast<LPCVOID>(m_mem.maxMpAddr), &maxMp, sizeof(uint32_t), nullptr);
+                }
+                if (curMp <= 100000000) {
+                    p.mp = static_cast<int32_t>(curMp);
+                    if (maxMp > 0) p.maxMp = static_cast<int32_t>(maxMp);
+                    changed = true;
+                }
+            }
+        }
+
+        // Read Level
+        if (m_mem.lvlAddr) {
+            if (m_mem.lvlIsDouble) {
+                double lvl = 0;
+                ReadProcessMemory(m_hProcess, reinterpret_cast<LPCVOID>(m_mem.lvlAddr), &lvl, sizeof(double), nullptr);
+                if (lvl >= 1.0 && lvl <= 10000.0) {
+                    p.level = static_cast<int32_t>(lvl);
+                    changed = true;
+                }
+            } else {
+                int32_t lvl = 0;
+                ReadProcessMemory(m_hProcess, reinterpret_cast<LPCVOID>(m_mem.lvlAddr), &lvl, sizeof(int32_t), nullptr);
+                if (lvl >= 1 && lvl <= 10000) {
+                    p.level = lvl;
+                    changed = true;
+                }
+            }
+        }
+
+        // Read Capacity
+        if (m_mem.capAddr) {
+            if (m_mem.capIsDouble) {
+                double cap = 0;
+                ReadProcessMemory(m_hProcess, reinterpret_cast<LPCVOID>(m_mem.capAddr), &cap, sizeof(double), nullptr);
+                if (cap >= 0.0 && cap <= 10000000.0) {
+                    p.capacity = cap;
+                    changed = true;
+                }
+            } else {
+                uint32_t cap = 0;
+                ReadProcessMemory(m_hProcess, reinterpret_cast<LPCVOID>(m_mem.capAddr), &cap, sizeof(uint32_t), nullptr);
+                if (cap <= 10000000) {
+                    p.capacity = static_cast<double>(cap);
+                    changed = true;
+                }
+            }
+        }
+
+        if (!m_extractedNick.empty() && p.name != m_extractedNick) {
+            p.name = m_extractedNick;
+            changed = true;
+        }
+
+        if (changed) {
+            GameState::instance().setPlayer(p);
+        }
+
+        auto now = std::chrono::steady_clock::now();
+        if (std::chrono::duration_cast<std::chrono::milliseconds>(now - m_lastCreatureScanTime).count() > 2500) {
+            m_lastCreatureScanTime = now;
+            scanMemoryForCreatures(p.position);
         }
 #endif
     }
@@ -393,72 +825,94 @@ public:
     // ==========================================
     // Actions Implementation
     // ==========================================
-    bool walk(core::Direction dir) override {
-        Player p = GameState::instance().getPlayer();
-        switch (dir) {
-            case core::Direction::North:     p.position.y -= 1; break;
-            case core::Direction::South:     p.position.y += 1; break;
-            case core::Direction::West:      p.position.x -= 1; break;
-            case core::Direction::East:      p.position.x += 1; break;
-            case core::Direction::NorthWest: p.position.x -= 1; p.position.y -= 1; break;
-            case core::Direction::NorthEast: p.position.x += 1; p.position.y -= 1; break;
-            case core::Direction::SouthWest: p.position.x -= 1; p.position.y += 1; break;
-            case core::Direction::SouthEast: p.position.x += 1; p.position.y += 1; break;
-            default: break;
+#ifdef _WIN32
+    void sendKey(WORD vk) {
+        if (!m_hwnd || !IsWindow(m_hwnd)) return;
+        UINT scanCode = MapVirtualKeyA(vk, MAPVK_VK_TO_VSC);
+        LPARAM lParamDown = 1 | (scanCode << 16);
+        LPARAM lParamUp = 1 | (scanCode << 16) | (1 << 30) | (1 << 31);
+        PostMessageA(m_hwnd, WM_KEYDOWN, vk, lParamDown);
+        PostMessageA(m_hwnd, WM_KEYUP, vk, lParamUp);
+    }
+
+    void sendText(const std::string& text) {
+        if (!m_hwnd || !IsWindow(m_hwnd)) return;
+        for (char c : text) {
+            PostMessageA(m_hwnd, WM_CHAR, static_cast<WPARAM>(static_cast<unsigned char>(c)), 1);
         }
-        GameState::instance().setPlayer(p);
-        core::Logger::debug("UniversalGameAdapter: Step to (" + std::to_string(p.position.x) + ", "
-                            + std::to_string(p.position.y) + ", " + std::to_string(p.position.z) + ")");
+        sendKey(VK_RETURN);
+    }
+#endif
+
+    bool walk(core::Direction dir) override {
+#ifdef _WIN32
+        if (m_hwnd && IsWindow(m_hwnd)) {
+            WORD vk = 0;
+            switch (dir) {
+                case core::Direction::North:     vk = VK_UP; break;
+                case core::Direction::South:     vk = VK_DOWN; break;
+                case core::Direction::West:      vk = VK_LEFT; break;
+                case core::Direction::East:      vk = VK_RIGHT; break;
+                case core::Direction::NorthWest: vk = VK_NUMPAD7; break;
+                case core::Direction::NorthEast: vk = VK_NUMPAD9; break;
+                case core::Direction::SouthWest: vk = VK_NUMPAD1; break;
+                case core::Direction::SouthEast: vk = VK_NUMPAD3; break;
+                default: break;
+            }
+            if (vk != 0) {
+                sendKey(vk);
+            }
+        }
+#endif
         return true;
     }
 
     bool walkTo(const core::Position& target) override {
+        auto now = std::chrono::steady_clock::now();
+        auto diffMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - m_lastWalkTime).count();
+        if (diffMs < 180) {
+            return true;
+        }
+        m_lastWalkTime = now;
+
         Player p = GameState::instance().getPlayer();
         if (p.position.z != target.z) {
             core::Logger::warn("UniversalGameAdapter: Cannot walk across floors directly");
             return false;
         }
+
         int dx = target.x - p.position.x;
         int dy = target.y - p.position.y;
-        if (dx != 0) p.position.x += (dx > 0 ? 1 : -1);
-        if (dy != 0) p.position.y += (dy > 0 ? 1 : -1);
+        if (dx == 0 && dy == 0) return true;
 
-        GameState::instance().setPlayer(p);
-        return true;
+        core::Direction dir;
+        if (dx > 0 && dy < 0) dir = core::Direction::NorthEast;
+        else if (dx < 0 && dy < 0) dir = core::Direction::NorthWest;
+        else if (dx > 0 && dy > 0) dir = core::Direction::SouthEast;
+        else if (dx < 0 && dy > 0) dir = core::Direction::SouthWest;
+        else if (dx > 0) dir = core::Direction::East;
+        else if (dx < 0) dir = core::Direction::West;
+        else if (dy > 0) dir = core::Direction::South;
+        else dir = core::Direction::North;
+
+        return walk(dir);
     }
 
     bool castSpell(const std::string& spell) override {
-        Player p = GameState::instance().getPlayer();
-        core::Logger::info("UniversalGameAdapter: Cast spell '" + spell + "' in client " + m_matchedBinary);
-
-        if (spell == "exura vita") {
-            p.hp = (std::min)(p.maxHp, p.hp + 400);
-            p.mp = (std::max)(0, p.mp - 160);
-        } else if (spell == "exura gran") {
-            p.hp = (std::min)(p.maxHp, p.hp + 200);
-            p.mp = (std::max)(0, p.mp - 70);
-        } else if (spell == "exori" || spell == "exori gran" || spell == "exori hur") {
-            p.mp = (std::max)(0, p.mp - 40);
+        core::Logger::info("UniversalGameAdapter: Cast spell '" + spell + "'");
+#ifdef _WIN32
+        if (m_hwnd && IsWindow(m_hwnd)) {
+            sendText(spell);
         }
-        GameState::instance().setPlayer(p);
-
+#endif
         core::EventManager::instance().publish("PlayerSpellCast", {
-            {"spell", spell},
-            {"hp", p.hp},
-            {"mp", p.mp}
+            {"spell", spell}
         });
         return true;
     }
 
     bool useItemOnSelf(uint32_t itemId) override {
-        Player p = GameState::instance().getPlayer();
         core::Logger::info("UniversalGameAdapter: Use item on self: " + std::to_string(itemId));
-        if (itemId == 266) {
-            p.hp = (std::min)(p.maxHp, p.hp + 250);
-        } else if (itemId == 268) {
-            p.mp = (std::min)(p.maxMp, p.mp + 150);
-        }
-        GameState::instance().setPlayer(p);
         return true;
     }
 
@@ -475,19 +929,27 @@ public:
 
     bool attackCreature(uint32_t creatureId) override {
         core::Logger::info("UniversalGameAdapter: Attacking creature ID " + std::to_string(creatureId));
-        auto creatures = GameState::instance().getCreatures();
-        for (auto& c : creatures) {
-            if (c.id == creatureId) {
-                c.hpPercent = (c.hpPercent > 15) ? (c.hpPercent - 15) : 0;
-                break;
-            }
+#ifdef _WIN32
+        if (m_hwnd && IsWindow(m_hwnd)) {
+            sendKey(VK_SPACE);
         }
-        GameState::instance().setCreatures(creatures);
+#endif
+        Player p = GameState::instance().getPlayer();
+        p.targetId = creatureId;
+        GameState::instance().setPlayer(p);
         return true;
     }
 
     bool stopAttack() override {
         core::Logger::info("UniversalGameAdapter: Stop attack");
+#ifdef _WIN32
+        if (m_hwnd && IsWindow(m_hwnd)) {
+            sendKey(VK_ESCAPE);
+        }
+#endif
+        Player p = GameState::instance().getPlayer();
+        p.targetId = 0;
+        GameState::instance().setPlayer(p);
         return true;
     }
 
@@ -505,6 +967,11 @@ public:
 
     bool say(const std::string& message) override {
         core::Logger::info("UniversalGameAdapter: Player say -> '" + message + "'");
+#ifdef _WIN32
+        if (m_hwnd && IsWindow(m_hwnd)) {
+            sendText(message);
+        }
+#endif
         return true;
     }
 
@@ -513,32 +980,16 @@ private:
         Player p;
         p.id = 10001;
         p.name = "Waiting for " + m_targetProcess;
-        p.position = {32300, 32200, 7};
-        p.hp = 1000;
-        p.maxHp = 1000;
-        p.mp = 500;
-        p.maxMp = 500;
-        p.level = 100;
-        p.capacity = 450.0;
+        p.position = {0, 0, 7};
+        p.hp = 0;
+        p.maxHp = 0;
+        p.mp = 0;
+        p.maxMp = 0;
+        p.level = 0;
+        p.capacity = 0.0;
         GameState::instance().setPlayer(p);
 
         std::vector<Creature> creatures;
-        Creature c1;
-        c1.id = 20001;
-        c1.name = "Dragon";
-        c1.position = {32305, 32202, 7};
-        c1.hpPercent = 100;
-        c1.type = CreatureType::Monster;
-        creatures.push_back(c1);
-
-        Creature c2;
-        c2.id = 20002;
-        c2.name = "Dragon Lord";
-        c2.position = {32310, 32205, 7};
-        c2.hpPercent = 100;
-        c2.type = CreatureType::Monster;
-        creatures.push_back(c2);
-
         GameState::instance().setCreatures(creatures);
     }
 
@@ -551,6 +1002,12 @@ private:
         return true;
     }
 
+    static std::string toHex(uintptr_t val) {
+        std::stringstream ss;
+        ss << std::hex << std::uppercase << val;
+        return ss.str();
+    }
+
     mutable std::mutex m_mutex;
     std::string m_targetProcess;
     std::vector<std::string> m_candidates;
@@ -561,6 +1018,31 @@ private:
     bool m_connected = false;
     bool m_attached = false;
     std::chrono::steady_clock::time_point m_lastScanTime{};
+    std::chrono::steady_clock::time_point m_lastMemScanTime{};
+    std::chrono::steady_clock::time_point m_lastWalkTime{};
+    std::chrono::steady_clock::time_point m_lastCreatureScanTime{};
+
+#ifdef _WIN32
+    HWND m_hwnd = NULL;
+    HANDLE m_hProcess = NULL;
+#endif
+
+    struct MemoryOffsets {
+        uintptr_t posAddr = 0;
+        bool posIsUint16 = true;
+        uintptr_t hpAddr = 0;
+        uintptr_t maxHpAddr = 0;
+        bool hpIsDouble = true;
+        uintptr_t mpAddr = 0;
+        uintptr_t maxMpAddr = 0;
+        bool mpIsDouble = true;
+        uintptr_t lvlAddr = 0;
+        bool lvlIsDouble = false;
+        uintptr_t capAddr = 0;
+        bool capIsDouble = true;
+        bool resolved = false;
+        int scanAttempts = 0;
+    } m_mem;
 };
 
 } // namespace bot::game
