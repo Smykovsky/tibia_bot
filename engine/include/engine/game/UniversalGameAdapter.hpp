@@ -142,142 +142,136 @@ public:
         std::lock_guard<std::mutex> lock(m_mutex);
 
 #ifdef _WIN32
-        // Method A: Search Windows by Window Title ("DBVictory: World - {nickname}")
-        struct WindowSearchContext {
-            DWORD pid = 0;
-            std::string title;
-            std::string nick;
-            bool found = false;
-        } winCtx;
+        try {
+            std::vector<std::string> toSearch;
+            if (!m_targetProcess.empty()) toSearch.push_back(m_targetProcess);
+            for (const auto& cand : m_candidates) {
+                if (std::find(toSearch.begin(), toSearch.end(), cand) == toSearch.end()) {
+                    toSearch.push_back(cand);
+                }
+            }
 
-        EnumWindows([](HWND hwnd, LPARAM lParam) -> BOOL {
-            auto* ctx = reinterpret_cast<WindowSearchContext*>(lParam);
-            if (!IsWindowVisible(hwnd)) return TRUE;
+            // Method 1: Search via Process Name (Toolhelp32) - Fast, safe, no window message hooks
+            HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+            if (snapshot != INVALID_HANDLE_VALUE) {
+                PROCESSENTRY32 pe{};
+                pe.dwSize = sizeof(PROCESSENTRY32);
+                if (Process32First(snapshot, &pe)) {
+                    do {
+                        std::string currentExe = pe.szExeFile;
+                        for (const auto& target : toSearch) {
+                            if (caseInsensitiveEquals(currentExe, target)) {
+                                m_processId = pe.th32ProcessID;
+                                m_matchedBinary = currentExe;
+                                m_attached = true;
+                                CloseHandle(snapshot);
 
-            char titleBuf[512];
-            int len = GetWindowTextA(hwnd, titleBuf, sizeof(titleBuf));
-            if (len > 0) {
-                std::string title(titleBuf, len);
-                std::string lowerTitle = title;
-                std::transform(lowerTitle.begin(), lowerTitle.end(), lowerTitle.begin(), ::tolower);
+                                // Find window title specifically for this PID
+                                struct TitleCtx {
+                                    DWORD targetPid;
+                                    std::string title;
+                                    std::string nick;
+                                } tCtx{ (DWORD)m_processId, "", "" };
 
-                // Check for "dbvictory", "dbv" or "tibia" in window title
-                if (lowerTitle.find("dbvictory") != std::string::npos ||
-                    lowerTitle.find("dbv") != std::string::npos ||
-                    lowerTitle.find("tibia") != std::string::npos) {
-                    DWORD procId = 0;
-                    GetWindowThreadProcessId(hwnd, &procId);
-                    if (procId > 0) {
-                        ctx->pid = procId;
-                        ctx->title = title;
-                        ctx->found = true;
+                                EnumWindows([](HWND hwnd, LPARAM lParam) -> BOOL {
+                                    auto* pCtx = reinterpret_cast<TitleCtx*>(lParam);
+                                    DWORD procId = 0;
+                                    GetWindowThreadProcessId(hwnd, &procId);
+                                    if (procId == pCtx->targetPid && IsWindowVisible(hwnd)) {
+                                        char buf[512];
+                                        int l = GetWindowTextA(hwnd, buf, sizeof(buf));
+                                        if (l > 0) {
+                                            pCtx->title = std::string(buf, l);
+                                            size_t dash = pCtx->title.find(" - ");
+                                            if (dash != std::string::npos && dash + 3 < pCtx->title.size()) {
+                                                pCtx->nick = pCtx->title.substr(dash + 3);
+                                            }
+                                            return FALSE;
+                                        }
+                                    }
+                                    return TRUE;
+                                }, reinterpret_cast<LPARAM>(&tCtx));
 
-                        // Parse Nickname: format "DBVictory: World - {nickname}"
-                        size_t dashPos = title.find(" - ");
-                        if (dashPos != std::string::npos && dashPos + 3 < title.size()) {
-                            ctx->nick = title.substr(dashPos + 3);
-                        } else {
-                            // Secondary format: "DBVictory - {nickname}"
-                            dashPos = title.find("-");
-                            if (dashPos != std::string::npos && dashPos + 1 < title.size()) {
-                                std::string sub = title.substr(dashPos + 1);
-                                while (!sub.empty() && sub.front() == ' ') sub.erase(sub.begin());
-                                while (!sub.empty() && sub.back() == ' ') sub.pop_back();
-                                if (!sub.empty()) ctx->nick = sub;
+                                m_windowTitle = tCtx.title;
+                                m_extractedNick = tCtx.nick;
+
+                                onProcessAttached();
+                                return true;
                             }
                         }
-                        return FALSE; // Stop enumeration
-                    }
+                    } while (Process32Next(snapshot, &pe));
                 }
+                CloseHandle(snapshot);
             }
-            return TRUE;
-        }, reinterpret_cast<LPARAM>(&winCtx));
 
-        if (winCtx.found) {
-            m_processId = winCtx.pid;
-            m_matchedBinary = "dbvStart.exe";
+            // Method 2: Search by Window Title as fallback
+            struct WindowSearchContext {
+                DWORD pid = 0;
+                std::string title;
+                std::string nick;
+                bool found = false;
+            } winCtx;
 
-            // Resolve exact executable file name via WinAPI if possible
-            HANDLE hProc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, winCtx.pid);
-            if (hProc) {
-                char exeBuf[MAX_PATH];
-                DWORD dwSize = sizeof(exeBuf);
-                if (QueryFullProcessImageNameA(hProc, 0, exeBuf, &dwSize)) {
-                    std::string fullPath(exeBuf);
-                    size_t slash = fullPath.find_last_of("\\/");
-                    if (slash != std::string::npos) {
-                        m_matchedBinary = fullPath.substr(slash + 1);
+            EnumWindows([](HWND hwnd, LPARAM lParam) -> BOOL {
+                auto* ctx = reinterpret_cast<WindowSearchContext*>(lParam);
+                if (!IsWindowVisible(hwnd)) return TRUE;
+
+                char titleBuf[512];
+                int len = GetWindowTextA(hwnd, titleBuf, sizeof(titleBuf));
+                if (len > 0) {
+                    std::string title(titleBuf, len);
+                    std::string lowerTitle = title;
+                    for (char& ch : lowerTitle) {
+                        ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
                     }
-                }
-                CloseHandle(hProc);
-            }
 
-            m_windowTitle = winCtx.title;
-            m_extractedNick = winCtx.nick;
-            m_attached = true;
-            onProcessAttached();
-            return true;
-        }
+                    if (lowerTitle.find("dbvictory") != std::string::npos ||
+                        lowerTitle.find("dbv") != std::string::npos ||
+                        lowerTitle.find("tibia") != std::string::npos) {
+                        DWORD procId = 0;
+                        GetWindowThreadProcessId(hwnd, &procId);
+                        if (procId > 0) {
+                            ctx->pid = procId;
+                            ctx->title = title;
+                            ctx->found = true;
 
-        // Method B: Search via Process Name (Toolhelp32)
-        std::vector<std::string> toSearch;
-        if (!m_targetProcess.empty()) toSearch.push_back(m_targetProcess);
-        for (const auto& cand : m_candidates) {
-            if (std::find(toSearch.begin(), toSearch.end(), cand) == toSearch.end()) {
-                toSearch.push_back(cand);
-            }
-        }
-
-        HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-        if (snapshot != INVALID_HANDLE_VALUE) {
-            PROCESSENTRY32 pe;
-            pe.dwSize = sizeof(PROCESSENTRY32);
-            if (Process32First(snapshot, &pe)) {
-                do {
-                    std::string currentExe = pe.szExeFile;
-                    for (const auto& target : toSearch) {
-                        if (caseInsensitiveEquals(currentExe, target)) {
-                            m_processId = pe.th32ProcessID;
-                            m_matchedBinary = currentExe;
-                            m_attached = true;
-
-                            // Scan window title for this process
-                            struct TitleCtx {
-                                DWORD targetPid;
-                                std::string title;
-                                std::string nick;
-                            } tCtx{ (DWORD)m_processId, "", "" };
-
-                            EnumWindows([](HWND hwnd, LPARAM lParam) -> BOOL {
-                                auto* pCtx = reinterpret_cast<TitleCtx*>(lParam);
-                                DWORD procId = 0;
-                                GetWindowThreadProcessId(hwnd, &procId);
-                                if (procId == pCtx->targetPid && IsWindowVisible(hwnd)) {
-                                    char buf[512];
-                                    int l = GetWindowTextA(hwnd, buf, sizeof(buf));
-                                    if (l > 0) {
-                                        pCtx->title = std::string(buf, l);
-                                        size_t dash = pCtx->title.find(" - ");
-                                        if (dash != std::string::npos && dash + 3 < pCtx->title.size()) {
-                                            pCtx->nick = pCtx->title.substr(dash + 3);
-                                        }
-                                        return FALSE;
-                                    }
-                                }
-                                return TRUE;
-                            }, reinterpret_cast<LPARAM>(&tCtx));
-
-                            m_windowTitle = tCtx.title;
-                            m_extractedNick = tCtx.nick;
-
-                            CloseHandle(snapshot);
-                            onProcessAttached();
-                            return true;
+                            size_t dashPos = title.find(" - ");
+                            if (dashPos != std::string::npos && dashPos + 3 < title.size()) {
+                                ctx->nick = title.substr(dashPos + 3);
+                            }
+                            return FALSE;
                         }
                     }
-                } while (Process32Next(snapshot, &pe));
+                }
+                return TRUE;
+            }, reinterpret_cast<LPARAM>(&winCtx));
+
+            if (winCtx.found) {
+                m_processId = winCtx.pid;
+                m_matchedBinary = "dbvStart.exe";
+
+                HANDLE hProc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, winCtx.pid);
+                if (hProc) {
+                    char exeBuf[MAX_PATH];
+                    DWORD dwSize = sizeof(exeBuf);
+                    if (QueryFullProcessImageNameA(hProc, 0, exeBuf, &dwSize)) {
+                        std::string fullPath(exeBuf);
+                        size_t slash = fullPath.find_last_of("\\/");
+                        if (slash != std::string::npos) {
+                            m_matchedBinary = fullPath.substr(slash + 1);
+                        }
+                    }
+                    CloseHandle(hProc);
+                }
+
+                m_windowTitle = winCtx.title;
+                m_extractedNick = winCtx.nick;
+                m_attached = true;
+                onProcessAttached();
+                return true;
             }
-            CloseHandle(snapshot);
+        } catch (...) {
+            // Guard against any OS/WinAPI exceptions
         }
 #else
         // POSIX / macOS / Wine search
@@ -551,7 +545,8 @@ private:
     static bool caseInsensitiveEquals(const std::string& a, const std::string& b) {
         if (a.size() != b.size()) return false;
         for (size_t i = 0; i < a.size(); ++i) {
-            if (std::tolower(a[i]) != std::tolower(b[i])) return false;
+            if (std::tolower(static_cast<unsigned char>(a[i])) != 
+                std::tolower(static_cast<unsigned char>(b[i]))) return false;
         }
         return true;
     }

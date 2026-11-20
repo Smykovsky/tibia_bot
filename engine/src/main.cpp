@@ -17,6 +17,23 @@
 #include "engine/script/ScriptManager.hpp"
 #include "engine/ipc/IpcServer.hpp"
 
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+
+LONG WINAPI CrashFilter(EXCEPTION_POINTERS* ep) {
+    DWORD code = ep->ExceptionRecord ? ep->ExceptionRecord->ExceptionCode : 0;
+    void* addr = ep->ExceptionRecord ? ep->ExceptionRecord->ExceptionAddress : nullptr;
+    std::fprintf(stderr, "[FATAL] Unhandled Exception 0x%08lX at address %p\n", code, addr);
+    std::fprintf(stdout, "[FATAL] Unhandled Exception 0x%08lX at address %p\n", code, addr);
+    std::fflush(stderr);
+    std::fflush(stdout);
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+#endif
+
 namespace {
 std::atomic<bool> g_shutdownRequested{false};
 std::mutex g_cvMutex;
@@ -30,25 +47,34 @@ void signalHandler(int signum) {
 }
 
 int main(int argc, char* argv[]) {
+    // Disable stdout and stderr buffering so logs reach the launcher pipe immediately
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
+    std::setvbuf(stderr, nullptr, _IONBF, 0);
+
+#ifdef _WIN32
+    SetUnhandledExceptionFilter(CrashFilter);
+#endif
+
     std::signal(SIGINT, signalHandler);
     std::signal(SIGTERM, signalHandler);
 
-    int port = 8765;
-    std::string targetClient = "dbvStart.exe";
-    for (int i = 1; i < argc; ++i) {
-        std::string arg = argv[i];
-        if (arg == "--port" && i + 1 < argc) {
-            port = std::stoi(argv[++i]);
-        } else if (arg == "--client" && i + 1 < argc) {
-            targetClient = argv[++i];
+    try {
+        int port = 8765;
+        std::string targetClient = "dbvStart.exe";
+        for (int i = 1; i < argc; ++i) {
+            std::string arg = argv[i];
+            if (arg == "--port" && i + 1 < argc) {
+                port = std::stoi(argv[++i]);
+            } else if (arg == "--client" && i + 1 < argc) {
+                targetClient = argv[++i];
+            }
         }
-    }
 
-    bot::core::Logger::info("=========================================");
-    bot::core::Logger::info("   TibiaBot C++ Engine (Shrouded Model)  ");
-    bot::core::Logger::info("   Target Client: " + targetClient);
-    bot::core::Logger::info("   Port: " + std::to_string(port));
-    bot::core::Logger::info("=========================================");
+        bot::core::Logger::info("=========================================");
+        bot::core::Logger::info("   TibiaBot C++ Engine (Shrouded Model)  ");
+        bot::core::Logger::info("   Target Client: " + targetClient);
+        bot::core::Logger::info("   Port: " + std::to_string(port));
+        bot::core::Logger::info("=========================================");
 
     // 1. Start IPC Server FIRST so Launcher connects immediately
     if (!bot::ipc::IpcServer::instance().start(port)) {
@@ -126,4 +152,11 @@ int main(int argc, char* argv[]) {
 
     bot::core::Logger::info("Engine terminated successfully.");
     return 0;
+    } catch (const std::exception& e) {
+        bot::core::Logger::error("Fatal exception in main(): " + std::string(e.what()));
+        return 1;
+    } catch (...) {
+        bot::core::Logger::error("Unknown fatal error in main()");
+        return 1;
+    }
 }
