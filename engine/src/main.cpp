@@ -58,6 +58,7 @@ int main(int argc, char* argv[]) {
 
 #ifdef _WIN32
     SetUnhandledExceptionFilter(CrashFilter);
+    bot::game::UniversalGameAdapter::enableDebugPrivileges();
 #endif
 
     std::signal(SIGINT, signalHandler);
